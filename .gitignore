@@ -1,0 +1,8 @@
+*
+!.gitignore
+!*.R
+!*.sh
+!*.md
+!*.txt
+!*.yaml
+!*.yml
