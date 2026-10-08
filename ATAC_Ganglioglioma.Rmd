@@ -157,3 +157,8 @@ p2 <- DimPlot(pbmc, reduction = "umap.atac", label = TRUE, label.size = 2.5, rep
 p3 <- DimPlot(pbmc, reduction = "wnn.umap", group.by = "sctype_classification", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("WNN")
 p1 + p2 + p3 & NoLegend() & theme(plot.title = element_text(hjust = 0.5))
 ```
+
+## Save Processed Data
+```{r save_data}
+saveRDS(pbmc, file = "Multiome_WNN_scType_Annotated.rds")
+```
