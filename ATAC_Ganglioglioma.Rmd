@@ -1,0 +1,159 @@
+---
+title: "ATAC_Ganglioglioma"
+output: html_document
+date: "2026-09-30"
+---
+
+```{r imports, echo=FALSE}
+library(Seurat)
+library(Signac) #for the analysis of single-cell chromatin datasets
+library(EnsDb.Hsapiens.v86) #for a set of annotations for hg38
+library(dplyr)
+library(ggplot2)
+library(GenomeInfoDb)
+```
+
+## data import
+
+
+```{r data import, echo = FALSE}
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+
+Multiome_path <- "/data-pure/sequencing/ngs/NGS2026_10893/HG38/count/cellranger/GG001AC/filtered_feature_bc_matrix.h5"
+ATAC_fragments_info_path <- "/data-pure/sequencing/ngs/NGS2026_10893/HG38/count/cellranger/GG001AC/atac_fragments.tsv.gz"
+ATAC_fragments_index_path <- "/data-pure/sequencing/ngs/NGS2026_10893/HG38/count/cellranger/GG001AC/atac_fragments.tsv.gz.tbi"
+
+inputdata.10x <- Read10X_h5(Multiome_path)
+# create a gene activity matrix from the peak matrix and GTF, using chromosomes 1:22, X, and Y.
+# extract RNA and ATAC data
+rna_counts <- inputdata.10x$`Gene Expression`
+atac_counts <- inputdata.10x$Peaks
+
+# Create Seurat object
+pbmc <- CreateSeuratObject(counts = rna_counts)
+pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^MT-")
+
+# Now add in the ATAC-seq data
+# we'll only use peaks in standard chromosomes
+grange.counts <- StringToGRanges(rownames(atac_counts), sep = c(":", "-"))
+grange.use <- seqnames(grange.counts) %in% standardChromosomes(grange.counts)
+atac_counts <- atac_counts[as.vector(grange.use), ]
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+seqlevelsStyle(annotations) <- 'UCSC'
+genome(annotations) <- "hg38"
+
+frag.file <- ATAC_fragments_info_path
+chrom_assay <- CreateChromatinAssay(
+   counts = atac_counts,
+   sep = c(":", "-"),
+   genome = 'hg38',
+   fragments = frag.file,
+   min.cells = 10,
+   annotation = annotations
+ )
+pbmc[["ATAC"]] <- chrom_assay
+
+# Compute ATAC QC metrics
+DefaultAssay(pbmc) <- "ATAC"
+pbmc <- NucleosomeSignal(object = pbmc)
+pbmc <- TSSEnrichment(object = pbmc, fast = FALSE)
+```
+
+## Title 2
+
+```{r pressure, echo=FALSE}
+VlnPlot(pbmc, features = c("nCount_ATAC", "nCount_RNA", "percent.mt", "TSS.enrichment", "nucleosome_signal"), ncol = 5,
+  log = TRUE, pt.size = 0) + NoLegend()
+```
+
+```{r filter, echo=FALSE}
+pbmc <- subset(
+  x = pbmc,
+  subset = nCount_ATAC < 7e4 &
+    nCount_ATAC > 4e3 &
+    nCount_RNA < 25000 &
+    nCount_RNA > 500 &
+    percent.mt < 5 &
+    TSS.enrichment > 2 &
+    nucleosome_signal < 2
+)
+```
+
+
+```{r Future package Memory gestion, echo=FALSE}
+# Load the future package (usually loaded with Seurat, but good to be explicit)
+library(future)
+
+# Increase max size to 4 GB (expressed in bytes: 4000 * 1024^2)
+options(future.globals.maxSize = 4000 * 1024^2)
+```
+
+
+```{r pressure, echo=FALSE}
+# RNA analysis
+#DefaultAssay(pbmc) <- "RNA"
+#pbmc <- SCTransform(pbmc, verbose = FALSE) %>% RunPCA() %>% RunUMAP(dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_')
+DefaultAssay(pbmc) <- "RNA"
+pbmc <- NormalizeData(pbmc) %>% 
+  FindVariableFeatures() %>% 
+  ScaleData() %>% 
+  RunPCA() %>% 
+  RunUMAP(dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_')
+
+# ATAC analysis
+# We exclude the first dimension as this is typically correlated with sequencing depth
+DefaultAssay(pbmc) <- "ATAC"
+pbmc <- RunTFIDF(pbmc)
+pbmc <- FindTopFeatures(pbmc, min.cutoff = 'q0')
+pbmc <- RunSVD(pbmc)
+pbmc <- RunUMAP(pbmc, reduction = 'lsi', dims = 2:50, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+```
+## Combination of RNA and ATAC modalities
+```{r WNN graph, echo=FALSE}
+
+pbmc <- FindMultiModalNeighbors(pbmc, reduction.list = list("pca", "lsi"), dims.list = list(1:50, 2:50))
+pbmc <- RunUMAP(pbmc, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+pbmc <- FindClusters(pbmc, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
+```
+
+
+```{r Display graph, echo=FALSE}
+
+p1 <- DimPlot(pbmc, reduction = "umap.rna", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA")
+p2 <- DimPlot(pbmc, reduction = "umap.atac", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("ATAC")
+p3 <- DimPlot(pbmc, reduction = "wnn.umap", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("WNN")
+p1 + p2 + p3 & NoLegend() & theme(plot.title = element_text(hjust = 0.5))
+```
+## scTYPE annotation of RNA modality
+```{r integrated file exploration}
+
+DefaultAssay(pbmc) <- "RNA"
+
+
+
+# lapply(c("dplyr","Seurat","HGNChelper","openxlsx"), library, character.only = T)
+# source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/gene_sets_prepare.R"); source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/sctype_score_.R");
+# source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/sctype_wrapper.R");
+# gs_list <- gene_sets_prepare("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/ScTypeDB_short.xlsx", "Brain")
+# 
+
+
+
+
+source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/sctype_wrapper.R"); 
+pbmc <- run_sctype(pbmc, assay = "RNA", scaled = TRUE, known_tissue_type="Brain",custom_marker_file="https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/ScTypeDB_short.xlsx",name="sctype_classification")
+
+DimPlot(pbmc, group.by = "sctype_classification", label = TRUE, repel = TRUE, label.size = 2, label.box = TRUE)  + ggtitle("ScType") + theme(legend.text = element_text(size = 4), legend.spacing.x = unit(0.1, 'cm'), legend.key.size = unit(0.3, "cm")) + guides(col = guide_legend(override.aes = list(size = 2), ncol = 1))
+
+
+```
+
+```{r Display graph, echo=FALSE}
+
+p1 <- DimPlot(pbmc, reduction = "umap.rna", group.by = "sctype_classification", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA")
+p2 <- DimPlot(pbmc, reduction = "umap.atac", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("ATAC")
+p3 <- DimPlot(pbmc, reduction = "wnn.umap", group.by = "sctype_classification", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("WNN")
+p1 + p2 + p3 & NoLegend() & theme(plot.title = element_text(hjust = 0.5))
+```
