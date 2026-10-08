@@ -119,12 +119,19 @@ pbmc <- FindClusters(pbmc, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
 ```
 
 
-```{r Display graph, echo=FALSE}
+```{r Display graph unannotated, echo=FALSE}
+dir.create("outputs", showWarnings = FALSE)
 
 p1 <- DimPlot(pbmc, reduction = "umap.rna", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA")
 p2 <- DimPlot(pbmc, reduction = "umap.atac", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("ATAC")
 p3 <- DimPlot(pbmc, reduction = "wnn.umap", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("WNN")
-p1 + p2 + p3 & NoLegend() & theme(plot.title = element_text(hjust = 0.5))
+combined_plot1 <- p1 + p2 + p3 & NoLegend() & theme(plot.title = element_text(hjust = 0.5))
+
+pdf("outputs/UMAP_initial_clusters.pdf", width = 15, height = 5)
+print(combined_plot1)
+dev.off()
+
+combined_plot1
 ```
 ## scTYPE annotation of RNA modality
 ```{r integrated file exploration}
@@ -150,12 +157,17 @@ DimPlot(pbmc, group.by = "sctype_classification", label = TRUE, repel = TRUE, la
 
 ```
 
-```{r Display graph, echo=FALSE}
-
+```{r Display graph annotated, echo=FALSE}
 p1 <- DimPlot(pbmc, reduction = "umap.rna", group.by = "sctype_classification", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA")
 p2 <- DimPlot(pbmc, reduction = "umap.atac", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("ATAC")
 p3 <- DimPlot(pbmc, reduction = "wnn.umap", group.by = "sctype_classification", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("WNN")
-p1 + p2 + p3 & NoLegend() & theme(plot.title = element_text(hjust = 0.5))
+combined_plot2 <- p1 + p2 + p3 & NoLegend() & theme(plot.title = element_text(hjust = 0.5))
+
+pdf("outputs/UMAP_scType_annotated.pdf", width = 15, height = 5)
+print(combined_plot2)
+dev.off()
+
+combined_plot2
 ```
 
 ## Save Processed Data
