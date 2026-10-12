@@ -18,7 +18,7 @@ library(EnsDb.Hsapiens.v86) # For genome annotations
 First, we load the saved multiome object containing our RNA/ATAC data, WNN clusters, and scType cell annotations.
 ```{r load_data}
 # Path to the annotated RDS object saved from the previous step
-ATAC_gang <- readRDS("Multiome_WNN_scType_Annotated.rds")
+ATAC_gang <- readRDS("outputs/Multiome_WNN_scType_Annotated.rds")
 
 # Verify the object
 ATAC_gang
@@ -78,21 +78,30 @@ cat("Peaks retained after chromosome and blacklist filtering:", length(peaks), "
 ## 4. Quantify Fragments Against MACS2 Peaks
 Now that we have high-confidence MACS2 peaks, we quantify the ATAC fragment counts across all cells for this new peak set.
 ```{r quantify_fragments}
+# Ensure the default assay is ATAC (Multiome_WNN_scType_Annotated.rds had DefaultAssay set to RNA)
+DefaultAssay(ATAC_gang) <- "ATAC"
+
+# Extract fragment object from the ATAC ChromatinAssay (or fallback to fragment file path if needed)
+frag_path <- "/data-pure/sequencing/ngs/NGS2026_10893/HG38/count/cellranger/GG001AC/atac_fragments.tsv.gz"
+atac_fragments <- Fragments(ATAC_gang[["ATAC"]])
+if (length(atac_fragments) == 0) {
+  atac_fragments <- CreateFragmentObject(path = frag_path, cells = colnames(ATAC_gang))
+}
+
 # Quantify fragments in each cell for the MACS2 peak set
-# Uses the fragment file already registered in the ATAC_gang object
 macs2_counts <- FeatureMatrix(
-  fragments = Fragments(ATAC_gang),
+  fragments = atac_fragments,
   features = peaks,
   cells = colnames(ATAC_gang)
 )
 
-# Retrieve existing gene annotations
-annotations <- Annotation(ATAC_gang)
+# Retrieve existing gene annotations from the ATAC ChromatinAssay
+annotations <- Annotation(ATAC_gang[["ATAC"]])
 
 # Create a new Chromatin Assay with the MACS2 peak counts
 new_atac_assay <- CreateChromatinAssay(
   counts = macs2_counts,
-  fragments = Fragments(ATAC_gang),
+  fragments = atac_fragments,
   annotation = annotations,
   genome = "hg38"
 )
