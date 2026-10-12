@@ -128,6 +128,6 @@ flowchart TD
 | `23b98ea` | 2026-10-12 | `ATAC_Ganglioglioma.Rmd`, `02_Peak_Calling_MACS2.Rmd` | Renamed Seurat object variable from generic `pbmc` to project-specific `ATAC_gang` across all scripts. |
 | `e800be4` | 2026-10-12 | `02_Peak_Calling_MACS2.Rmd` | Updated MACS2 pipeline to import external Singularity `.narrowPeak` outputs, quantify fragment counts into new `ChromatinAssay`, and recompute dimensionality reductions. |
 | `c4d16f0` | 2026-10-12 | `README.md` | Added comprehensive pipeline documentation, architecture diagrams, file registry, and structured push changelog. |
-| *(Pending)* | 2026-10-12 | `02_Peak_Calling_MACS2.Rmd`, `README.md` | Fixed `Fragments()` generic error by explicitly targeting `ATAC_gang[["ATAC"]]` and setting `DefaultAssay` to ATAC (preventing method dispatch failure against Seurat v5 Assay5). |
+| `59be756` | 2026-10-12 | `02_Peak_Calling_MACS2.Rmd`, `README.md` | Fixed `Fragments()` generic error by explicitly targeting `ATAC_gang[["ATAC"]]` and setting `DefaultAssay` to ATAC (preventing method dispatch failure against Seurat v5 Assay5). |
 
 > **Agent Protocol:** Before every future `git push`, this README's **Git Push & Change Log** and **File Registry** must be updated with the newest modifications.
