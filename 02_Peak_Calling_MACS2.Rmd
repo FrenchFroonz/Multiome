@@ -16,10 +16,10 @@ library(EnsDb.Hsapiens.v86) # For genome annotations
 First, we load the saved multiome object containing our RNA/ATAC data, WNN clusters, and scType cell annotations.
 ```{r load_data}
 # Update this path if the RDS file was saved in a different location
-pbmc <- readRDS("Multiome_WNN_scType_Annotated.rds")
+ATAC_gang <- readRDS("Multiome_WNN_scType_Annotated.rds")
 
 # Verify the object loaded correctly
-pbmc
+ATAC_gang
 ```
 
 ## Setup MACS2
@@ -32,13 +32,13 @@ This dramatically increases our sensitivity to find rare regulatory elements tha
 
 ```{r call_peaks}
 # Ensure the default assay is ATAC so Signac knows where to find the fragment files
-DefaultAssay(pbmc) <- "ATAC"
+DefaultAssay(ATAC_gang) <- "ATAC"
 
 # Call peaks using MACS2
 # group.by tells Signac to group the cells by their annotated cell type
 # Note: This step can take a while depending on the number of cells and clusters!
 peaks <- CallPeaks(
-  object = pbmc,
+  object = ATAC_gang,
   group.by = "sctype_classification",
   macs2.path = "/path/to/macs2" # If macs2 is not in your PATH, provide the absolute path here
 )
@@ -58,33 +58,33 @@ peaks <- subsetByOverlaps(x = peaks, ranges = blacklist_hg38_unified, invert = T
 # Quantify fragments in each cell for the new peak set
 # We use the fragments file that is already attached to the current ATAC assay
 macs2_counts <- FeatureMatrix(
-  fragments = Fragments(pbmc),
+  fragments = Fragments(ATAC_gang),
   features = peaks,
-  cells = colnames(pbmc)
+  cells = colnames(ATAC_gang)
 )
 
 # Get the existing gene annotations from the object
-annotations <- Annotation(pbmc)
+annotations <- Annotation(ATAC_gang)
 
 # Create a new Chromatin Assay with the new peak counts
 new_atac_assay <- CreateChromatinAssay(
   counts = macs2_counts,
-  fragments = frag_obj,
+  fragments = Fragments(ATAC_gang),
   annotation = annotations
 )
 
 # Overwrite the old ATAC assay with the new one
-pbmc[["ATAC"]] <- new_atac_assay
+ATAC_gang[["ATAC"]] <- new_atac_assay
 
 # Re-run TF-IDF on the new peak matrix (SVD and UMAP are optional here if you want to re-cluster)
-DefaultAssay(pbmc) <- "ATAC"
-pbmc <- RunTFIDF(pbmc)
-pbmc <- FindTopFeatures(pbmc, min.cutoff = "q0")
-pbmc <- RunSVD(pbmc)
+DefaultAssay(ATAC_gang) <- "ATAC"
+ATAC_gang <- RunTFIDF(ATAC_gang)
+ATAC_gang <- FindTopFeatures(ATAC_gang, min.cutoff = "q0")
+ATAC_gang <- RunSVD(ATAC_gang)
 ```
 
 ## Save the Updated Object
 We now have an object with high-resolution, cell-type specific peaks!
 ```{r save}
-saveRDS(pbmc, file = "Multiome_MACS2_Peaks.rds")
+saveRDS(ATAC_gang, file = "Multiome_MACS2_Peaks.rds")
 ```

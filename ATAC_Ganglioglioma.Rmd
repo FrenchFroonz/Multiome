@@ -32,8 +32,8 @@ rna_counts <- inputdata.10x$`Gene Expression`
 atac_counts <- inputdata.10x$Peaks
 
 # Create Seurat object
-pbmc <- CreateSeuratObject(counts = rna_counts)
-pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^MT-")
+ATAC_gang <- CreateSeuratObject(counts = rna_counts)
+ATAC_gang[["percent.mt"]] <- PercentageFeatureSet(ATAC_gang, pattern = "^MT-")
 
 # Now add in the ATAC-seq data
 # we'll only use peaks in standard chromosomes
@@ -53,24 +53,24 @@ chrom_assay <- CreateChromatinAssay(
    min.cells = 10,
    annotation = annotations
  )
-pbmc[["ATAC"]] <- chrom_assay
+ATAC_gang[["ATAC"]] <- chrom_assay
 
 # Compute ATAC QC metrics
-DefaultAssay(pbmc) <- "ATAC"
-pbmc <- NucleosomeSignal(object = pbmc)
-pbmc <- TSSEnrichment(object = pbmc, fast = FALSE)
+DefaultAssay(ATAC_gang) <- "ATAC"
+ATAC_gang <- NucleosomeSignal(object = ATAC_gang)
+ATAC_gang <- TSSEnrichment(object = ATAC_gang, fast = FALSE)
 ```
 
 ## Title 2
 
 ```{r pressure, echo=FALSE}
-VlnPlot(pbmc, features = c("nCount_ATAC", "nCount_RNA", "percent.mt", "TSS.enrichment", "nucleosome_signal"), ncol = 5,
+VlnPlot(ATAC_gang, features = c("nCount_ATAC", "nCount_RNA", "percent.mt", "TSS.enrichment", "nucleosome_signal"), ncol = 5,
   log = TRUE, pt.size = 0) + NoLegend()
 ```
 
 ```{r filter, echo=FALSE}
-pbmc <- subset(
-  x = pbmc,
+ATAC_gang <- subset(
+  x = ATAC_gang,
   subset = nCount_ATAC < 7e4 &
     nCount_ATAC > 4e3 &
     nCount_RNA < 25000 &
@@ -93,10 +93,10 @@ options(future.globals.maxSize = 4000 * 1024^2)
 
 ```{r pressure, echo=FALSE}
 # RNA analysis
-#DefaultAssay(pbmc) <- "RNA"
-#pbmc <- SCTransform(pbmc, verbose = FALSE) %>% RunPCA() %>% RunUMAP(dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_')
-DefaultAssay(pbmc) <- "RNA"
-pbmc <- NormalizeData(pbmc) %>% 
+#DefaultAssay(ATAC_gang) <- "RNA"
+#ATAC_gang <- SCTransform(ATAC_gang, verbose = FALSE) %>% RunPCA() %>% RunUMAP(dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_')
+DefaultAssay(ATAC_gang) <- "RNA"
+ATAC_gang <- NormalizeData(ATAC_gang) %>% 
   FindVariableFeatures() %>% 
   ScaleData() %>% 
   RunPCA() %>% 
@@ -104,27 +104,27 @@ pbmc <- NormalizeData(pbmc) %>%
 
 # ATAC analysis
 # We exclude the first dimension as this is typically correlated with sequencing depth
-DefaultAssay(pbmc) <- "ATAC"
-pbmc <- RunTFIDF(pbmc)
-pbmc <- FindTopFeatures(pbmc, min.cutoff = 'q0')
-pbmc <- RunSVD(pbmc)
-pbmc <- RunUMAP(pbmc, reduction = 'lsi', dims = 2:50, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+DefaultAssay(ATAC_gang) <- "ATAC"
+ATAC_gang <- RunTFIDF(ATAC_gang)
+ATAC_gang <- FindTopFeatures(ATAC_gang, min.cutoff = 'q0')
+ATAC_gang <- RunSVD(ATAC_gang)
+ATAC_gang <- RunUMAP(ATAC_gang, reduction = 'lsi', dims = 2:50, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
 ```
 ## Combination of RNA and ATAC modalities
 ```{r WNN graph, echo=FALSE}
 
-pbmc <- FindMultiModalNeighbors(pbmc, reduction.list = list("pca", "lsi"), dims.list = list(1:50, 2:50))
-pbmc <- RunUMAP(pbmc, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
-pbmc <- FindClusters(pbmc, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
+ATAC_gang <- FindMultiModalNeighbors(ATAC_gang, reduction.list = list("pca", "lsi"), dims.list = list(1:50, 2:50))
+ATAC_gang <- RunUMAP(ATAC_gang, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+ATAC_gang <- FindClusters(ATAC_gang, graph.name = "wsnn", algorithm = 3, verbose = FALSE)
 ```
 
 
 ```{r Display graph unannotated, echo=FALSE}
 dir.create("outputs", showWarnings = FALSE)
 
-p1 <- DimPlot(pbmc, reduction = "umap.rna", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA")
-p2 <- DimPlot(pbmc, reduction = "umap.atac", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("ATAC")
-p3 <- DimPlot(pbmc, reduction = "wnn.umap", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("WNN")
+p1 <- DimPlot(ATAC_gang, reduction = "umap.rna", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA")
+p2 <- DimPlot(ATAC_gang, reduction = "umap.atac", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("ATAC")
+p3 <- DimPlot(ATAC_gang, reduction = "wnn.umap", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("WNN")
 combined_plot1 <- p1 + p2 + p3 & NoLegend() & theme(plot.title = element_text(hjust = 0.5))
 
 pdf("outputs/UMAP_initial_clusters.pdf", width = 15, height = 5)
@@ -136,7 +136,7 @@ combined_plot1
 ## scTYPE annotation of RNA modality
 ```{r integrated file exploration}
 
-DefaultAssay(pbmc) <- "RNA"
+DefaultAssay(ATAC_gang) <- "RNA"
 
 
 
@@ -150,17 +150,17 @@ DefaultAssay(pbmc) <- "RNA"
 
 
 source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/sctype_wrapper.R"); 
-pbmc <- run_sctype(pbmc, assay = "RNA", scaled = TRUE, known_tissue_type="Brain",custom_marker_file="https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/ScTypeDB_short.xlsx",name="sctype_classification")
+ATAC_gang <- run_sctype(ATAC_gang, assay = "RNA", scaled = TRUE, known_tissue_type="Brain",custom_marker_file="https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/ScTypeDB_short.xlsx",name="sctype_classification")
 
-DimPlot(pbmc, group.by = "sctype_classification", label = TRUE, repel = TRUE, label.size = 2, label.box = TRUE)  + ggtitle("ScType") + theme(legend.text = element_text(size = 4), legend.spacing.x = unit(0.1, 'cm'), legend.key.size = unit(0.3, "cm")) + guides(col = guide_legend(override.aes = list(size = 2), ncol = 1))
+DimPlot(ATAC_gang, group.by = "sctype_classification", label = TRUE, repel = TRUE, label.size = 2, label.box = TRUE)  + ggtitle("ScType") + theme(legend.text = element_text(size = 4), legend.spacing.x = unit(0.1, 'cm'), legend.key.size = unit(0.3, "cm")) + guides(col = guide_legend(override.aes = list(size = 2), ncol = 1))
 
 
 ```
 
 ```{r Display graph annotated, echo=FALSE}
-p1 <- DimPlot(pbmc, reduction = "umap.rna", group.by = "sctype_classification", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA")
-p2 <- DimPlot(pbmc, reduction = "umap.atac", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("ATAC")
-p3 <- DimPlot(pbmc, reduction = "wnn.umap", group.by = "sctype_classification", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("WNN")
+p1 <- DimPlot(ATAC_gang, reduction = "umap.rna", group.by = "sctype_classification", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("RNA")
+p2 <- DimPlot(ATAC_gang, reduction = "umap.atac", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("ATAC")
+p3 <- DimPlot(ATAC_gang, reduction = "wnn.umap", group.by = "sctype_classification", label = TRUE, label.size = 2.5, repel = TRUE) + ggtitle("WNN")
 combined_plot2 <- p1 + p2 + p3 & NoLegend() & theme(plot.title = element_text(hjust = 0.5))
 
 pdf("outputs/UMAP_scType_annotated.pdf", width = 15, height = 5)
@@ -172,5 +172,5 @@ combined_plot2
 
 ## Save Processed Data
 ```{r save_data}
-saveRDS(pbmc, file = "Multiome_WNN_scType_Annotated.rds")
+saveRDS(ATAC_gang, file = "Multiome_WNN_scType_Annotated.rds")
 ```
