@@ -59,16 +59,78 @@ ATAC_gang[["ATAC"]] <- chrom_assay
 DefaultAssay(ATAC_gang) <- "ATAC"
 ATAC_gang <- NucleosomeSignal(object = ATAC_gang)
 ATAC_gang <- TSSEnrichment(object = ATAC_gang, fast = FALSE)
+
+# Compute additional single-cell ATAC noise metrics (ENCODE / Signac best practices)
+# 1. Total fragments & Fraction of reads in peaks (pct_reads_in_peaks / FRiP)
+total_fragments <- CountFragments(frag.file)
+rownames(total_fragments) <- total_fragments$CB
+ATAC_gang$fragments <- total_fragments[colnames(ATAC_gang), "frequency_count"]
+ATAC_gang$pct_reads_in_peaks <- (ATAC_gang$nCount_ATAC / ATAC_gang$fragments) * 100
+
+# 2. Blacklist ratio (fraction of fragments in ENCODE blacklisted regions)
+ATAC_gang$blacklist_ratio <- FractionCountsInRegion(
+  object = ATAC_gang,
+  assay = "ATAC",
+  regions = blacklist_hg38_unified
+)
 ```
 
-## Title 2
+## TSS Enrichment Exploration (Brain Tumor & Interface Tissue)
 
-```{r pressure, echo=FALSE}
-VlnPlot(ATAC_gang, features = c("nCount_ATAC", "nCount_RNA", "percent.mt", "TSS.enrichment", "nucleosome_signal"), ncol = 5,
-  log = TRUE, pt.size = 0) + NoLegend()
+```{r tss_distribution_analysis, echo=FALSE}
+# Plot TSS enrichment distribution to assess threshold stringency (2 vs 3 vs 4)
+# In brain tumor and interface samples, higher background and variable chromatin accessibility are expected.
+dir.create("outputs", showWarnings = FALSE)
+
+p_tss_dens <- ggplot(ATAC_gang@meta.data, aes(x = TSS.enrichment)) +
+  geom_density(fill = "#4285F4", alpha = 0.35, color = "#1a73e8", linewidth = 1) +
+  geom_vline(xintercept = c(2, 3, 4), linetype = "dashed", color = c("firebrick", "darkorange", "forestgreen"), linewidth = 0.8) +
+  annotate("text", x = 2, y = Inf, label = "Min Pass (2)", vjust = 2, color = "firebrick", angle = 90, size = 3.5) +
+  annotate("text", x = 3, y = Inf, label = "Intermediate (3)", vjust = 2, color = "darkorange", angle = 90, size = 3.5) +
+  annotate("text", x = 4, y = Inf, label = "Ideal (4)", vjust = 2, color = "forestgreen", angle = 90, size = 3.5) +
+  theme_minimal() +
+  labs(
+    title = "TSS Enrichment Score Distribution",
+    subtitle = paste0("Total cells: ", ncol(ATAC_gang), 
+                      " | >2: ", sum(ATAC_gang$TSS.enrichment > 2, na.rm = TRUE),
+                      " | >3: ", sum(ATAC_gang$TSS.enrichment > 3, na.rm = TRUE),
+                      " | >4: ", sum(ATAC_gang$TSS.enrichment > 4, na.rm = TRUE)),
+    x = "TSS Enrichment Score",
+    y = "Density"
+  )
+
+p_tss_scatter <- ggplot(ATAC_gang@meta.data, aes(x = nCount_ATAC, y = TSS.enrichment)) +
+  geom_point(alpha = 0.25, size = 0.8, color = "#1a73e8") +
+  scale_x_log10() +
+  geom_hline(yintercept = c(2, 3, 4), linetype = "dashed", color = c("firebrick", "darkorange", "forestgreen"), linewidth = 0.8) +
+  theme_minimal() +
+  labs(title = "TSS Enrichment vs Sequencing Depth", x = "nCount_ATAC (log10)", y = "TSS Enrichment")
+
+tss_combined <- p_tss_dens + p_tss_scatter
+pdf("outputs/TSS_enrichment_distribution.pdf", width = 12, height = 5)
+print(tss_combined)
+dev.off()
+
+tss_combined
+```
+
+## QC Violin Plots
+
+```{r qc_violins, echo=FALSE}
+VlnPlot(
+  ATAC_gang,
+  features = c("nCount_ATAC", "nCount_RNA", "percent.mt", "TSS.enrichment", "nucleosome_signal", "pct_reads_in_peaks", "blacklist_ratio"),
+  ncol = 4,
+  log = TRUE,
+  pt.size = 0
+) + NoLegend()
 ```
 
 ```{r filter, echo=FALSE}
+# Filtering using calibrated thresholds:
+# nucleosome_signal < 4 (relaxed from < 2 to preserve valid nuclei with intact nucleosomal structure)
+# percent.mt < 5 (strict for single-nuclei)
+# blacklist_ratio < 0.05 (filters apoptotic nuclei / non-specific background)
 ATAC_gang <- subset(
   x = ATAC_gang,
   subset = nCount_ATAC < 7e4 &
@@ -77,7 +139,8 @@ ATAC_gang <- subset(
     nCount_RNA > 500 &
     percent.mt < 5 &
     TSS.enrichment > 2 &
-    nucleosome_signal < 2
+    nucleosome_signal < 4 &
+    blacklist_ratio < 0.05
 )
 ```
 
@@ -168,6 +231,52 @@ print(combined_plot2)
 dev.off()
 
 combined_plot2
+```
+
+## Gene Activity Matrix & Chromatin-RNA Concordance
+
+```{r gene_activity}
+# Derive GeneActivity matrix from chromatin accessibility (gene bodies + 2kb upstream promoters)
+# Enables orthogonal validation that epigenomic accessibility correlates with scType RNA cell annotations
+DefaultAssay(ATAC_gang) <- "ATAC"
+gene.activities <- GeneActivity(ATAC_gang)
+
+# Add as a new assay
+ATAC_gang[["ACTIVITY"]] <- CreateAssayObject(counts = gene.activities)
+
+# Normalize GeneActivity assay
+DefaultAssay(ATAC_gang) <- "ACTIVITY"
+ATAC_gang <- NormalizeData(
+  object = ATAC_gang,
+  assay = "ACTIVITY",
+  normalization.method = "LogNormalize",
+  scale.factor = median(ATAC_gang$nCount_ACTIVITY)
+)
+
+# Canonical brain & glioma markers to evaluate concordance:
+# Astrocytic / Glioma: GFAP, SLC1A2
+# Oligodendrocyte: MBP, MOG
+# Neuronal: RBFOX3, SYP
+# Glioma Stem / Progenitor: SOX2, OLIG2
+# Microglia / Macrophage: AIF1
+test_markers <- c("GFAP", "MBP", "RBFOX3", "SOX2", "AIF1")
+available_markers <- intersect(test_markers, rownames(ATAC_gang[["ACTIVITY"]]))
+
+if (length(available_markers) > 0) {
+  DefaultAssay(ATAC_gang) <- "RNA"
+  p_rna <- FeaturePlot(ATAC_gang, features = available_markers, reduction = "wnn.umap", ncol = length(available_markers))
+  
+  DefaultAssay(ATAC_gang) <- "ACTIVITY"
+  p_act <- FeaturePlot(ATAC_gang, features = available_markers, reduction = "wnn.umap", ncol = length(available_markers))
+  
+  p_concordance <- p_rna / p_act
+  pdf("outputs/RNA_vs_GeneActivity_concordance.pdf", width = 3.5 * length(available_markers), height = 7)
+  print(p_concordance)
+  dev.off()
+}
+
+# Set DefaultAssay back to RNA
+DefaultAssay(ATAC_gang) <- "RNA"
 ```
 
 ## Save Processed Data
