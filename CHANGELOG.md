@@ -6,9 +6,10 @@ All notable changes, architectural updates, and code modifications for this repo
 
 ## [Current - 2026-10-21]
 ### Added
+- **Azimuth Cell-Type Annotation Integration (`Azimuth_cellType`)**: Added dedicated ingestion of Azimuth alignment predictions across both `test_process_and_merge_atac.Rmd` (Chunk 10) and `process_and_merge_atac.R` (Step 3.6b). Features automatic file format handling (CSV, TSV, RDS), candidate column detection (`predicted.celltype.l2`, `cell_type`, etc.), prefix-aware barcode harmonization, and rendering of annotated cell types onto the joint WNN UMAP.
 - **`test_process_and_merge_atac.Rmd`**: Interactive, single-sample test notebook reproducing the entire ATAC QC, empty droplet avoidance, MACS2 peak cleaning, Signac QC, barcode harmonization, and multimodal WNN dimensionality reduction pipeline with separate chunks and explanatory comments.
 - **`process_and_merge_atac.R`**: Modular multi-sample batch pipeline script with core `process_single_sample()` function, `optparse` CLI, standalone Signac ATAC QC, empty droplet avoidance, barcode harmonization, and recombination with pre-processed RNA Seurat `.rds` objects.
-- **`samples_template.csv`**: Template sample sheet for multi-sample batch processing (`sample_id,rna_rds_path,peaks_path,fragments_path,output_dir`).
+- **`samples_template.csv`**: Template sample sheet for multi-sample batch processing with support for `metadata_path` and `azimuth_path` (`sample_id,rna_rds_path,peaks_path,fragments_path,metadata_path,azimuth_path,output_dir`).
 - **`submit_multiome_batch.sh`**: SLURM batch job submission script for running batch processing on cluster compute nodes.
 - **Memory Cleanup (`gc()`)**: Explicit garbage collection between batch iterations to avoid memory bloat on interactive nodes.
 - **CSV Whitelist in `.gitignore`**: Whitelisted `*.csv` files to enable tracking of sample sheets and configuration templates.

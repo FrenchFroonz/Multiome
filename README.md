@@ -104,6 +104,7 @@ flowchart TD
   - Generates comprehensive diagnostic QC PDFs (`VlnPlot`, `TSSPlot`, and `nCount_ATAC` vs `TSS.enrichment` scatter).
   - Automatically harmonizes barcode prefixes between RNA and ATAC (`RenameCells`).
   - Subsets to high-quality intersected cells, integrates ATAC `ChromatinAssay` and non-redundant metadata into the RNA object.
+  - Ingests Azimuth cell-type predictions from the alignment output, attaches them to `@meta.data$Azimuth_cellType`, and renders them on the joint WNN UMAP.
   - Computes joint dimensional reductions: ATAC LSI (dims 2:30), refreshes/verifies RNA PCA (dims 1:40), and computes Weighted Nearest Neighbor (`FindMultiModalNeighbors` + `wnn.umap`).
   - Executes samples inside a `tryCatch()` block and invokes `gc()` between iterations to free memory on interactive nodes.
   - Exports `<sample_id>_multiome_merged.rds`, `<sample_id>_joint_wnn_umaps.pdf`, `<sample_id>_cell_retention_summary.csv`, and a master `batch_multiome_processing_summary.csv`.
@@ -115,8 +116,8 @@ flowchart TD
 ---
 
 ### 4. Supporting Cluster Scripts & Documentation
-* **`test_process_and_merge_atac.Rmd`**: Interactive, single-sample R Markdown test notebook mirroring the exact analytical steps of `process_and_merge_atac.R`. Designed for stepping through in RStudio with dedicated chunks and verbose commentary to validate QC cutoffs, droplet avoidance, and WNN parameters.
-* **`samples_template.csv`**: Template sample sheet for batch processing (`sample_id,rna_rds_path,peaks_path,fragments_path,output_dir`).
+* **`test_process_and_merge_atac.Rmd`**: Interactive, single-sample R Markdown test notebook mirroring the exact analytical steps of `process_and_merge_atac.R`. Designed for stepping through in RStudio with dedicated chunks and verbose commentary to validate QC cutoffs, droplet avoidance, Azimuth annotations (`Azimuth_cellType`), and WNN parameters.
+* **`samples_template.csv`**: Template sample sheet for batch processing (`sample_id,rna_rds_path,peaks_path,fragments_path,metadata_path,azimuth_path,output_dir`).
 * **`submit_multiome_batch.sh`**: SLURM batch submission script for running batch processing on cluster compute nodes.
 * **`SKILLS_BREAKDOWN_AND_RECOMMENDATIONS.md`**: Technical synthesis of ATAC skills suite, standardizing 501 bp peaks, and QC calibrations.
 * **`TODO.md`**: Project roadmap tracking downstream modules (TF Motifs/chromVAR, Enhancer-Gene Linking, Pseudobulk DARs).
@@ -162,5 +163,6 @@ flowchart TD
 | `6361bcc` | 2026-10-21 | `process_and_merge_atac.R`, `samples_template.csv`, `submit_multiome_array.sh`, `.gitignore`, `README.md`, `CHANGELOG.md` | Created modular multi-sample `process_and_merge_atac.R` pipeline script, SLURM array runner, sample template, and barcode harmonization logic. |
 | `d2ca4bd` | 2026-10-21 | `process_and_merge_atac.R`, `submit_multiome_batch.sh`, `README.md`, `CHANGELOG.md` | Streamlined `process_and_merge_atac.R` to Batch Mode only, structured `process_single_sample()` core logic, and added `gc()` memory cleanup between iterations. |
 | `f5f8cd1` | 2026-10-21 | `test_process_and_merge_atac.Rmd`, `README.md`, `CHANGELOG.md` | Added interactive single-sample test notebook `test_process_and_merge_atac.Rmd` reproducing batch pipeline logic step-by-step. |
+| `Pending` | 2026-10-21 | `test_process_and_merge_atac.Rmd`, `process_and_merge_atac.R`, `samples_template.csv`, `README.md`, `CHANGELOG.md` | Integrated Azimuth cell-type annotations (`Azimuth_cellType`) into Seurat metadata, 4-panel diagnostic UMAPs, and sample sheets. |
 
 > **Agent Protocol:** Before every future `git push`, this README's **Git Push & Change Log** and **File Registry** must be updated with the newest modifications.

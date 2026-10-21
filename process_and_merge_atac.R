@@ -125,7 +125,7 @@ load_and_clean_peaks <- function(peaks_path) {
 # ==============================================================================
 process_single_sample <- function(sample_id, rna_rds_path, peaks_path, fragments_path, 
                                   output_dir = "./output", metadata_path = NULL, 
-                                  annotations = NULL, params = list()) {
+                                  azimuth_path = NULL, annotations = NULL, params = list()) {
   
   cat("\n==============================================================================\n")
   message(sprintf("[SAMPLE] Starting processing for Sample ID: %s", sample_id))
@@ -338,6 +338,79 @@ process_single_sample <- function(sample_id, rna_rds_path, peaks_path, fragments
   }
   
   # ----------------------------------------------------------------------------
+  # Step 3.6b: Attach Azimuth Cell Type Annotations
+  # ----------------------------------------------------------------------------
+  if (!is.null(azimuth_path) && !file.exists(azimuth_path)) {
+    alignment_dir <- dirname(fragments_path)
+    candidate_names <- c(
+      "azimuth_annotations.csv", "azimuth_predictions.tsv", "predictions.tsv",
+      "azimuth_results.csv", "azimuth_pred.tsv", "azimuth_cell_types.csv",
+      "per_barcode_annotations.csv", "azimuth/predictions.tsv", "azimuth/azimuth_annotations.csv"
+    )
+    for (cand in candidate_names) {
+      full_cand <- file.path(alignment_dir, cand)
+      if (file.exists(full_cand)) {
+        message(sprintf("     Auto-detected Azimuth annotation file at: %s", full_cand))
+        azimuth_path <- full_cand
+        break
+      }
+    }
+  }
+  
+  if (!is.null(azimuth_path) && file.exists(azimuth_path)) {
+    message(sprintf("     Reading Azimuth annotation file: %s", azimuth_path))
+    if (grepl("\\.rds$", azimuth_path, ignore.case = TRUE)) {
+      az_raw <- readRDS(azimuth_path)
+      az_df <- if (inherits(az_raw, "Seurat")) az_raw@meta.data else as.data.frame(az_raw)
+    } else {
+      first_line <- readLines(azimuth_path, n = 1)
+      sep_char <- if (grepl("\t", first_line)) "\t" else ","
+      az_df <- read.table(file = azimuth_path, header = TRUE, sep = sep_char, stringsAsFactors = FALSE, check.names = FALSE)
+    }
+    
+    barcode_candidates <- c("barcode", "Barcode", "cell", "Cell", "cell_barcode", "cb", "CB")
+    matched_bc_col <- intersect(barcode_candidates, colnames(az_df))
+    if (length(matched_bc_col) > 0) {
+      az_barcodes <- as.character(az_df[[matched_bc_col[1]]])
+    } else if (!is.null(rownames(az_df)) && !all(rownames(az_df) == as.character(seq_len(nrow(az_df))))) {
+      az_barcodes <- rownames(az_df)
+    } else {
+      az_barcodes <- as.character(az_df[, 1])
+    }
+    
+    type_candidates <- c("Azimuth_cellType", "predicted.celltype.l2", "predicted.annotation.l2",
+                         "predicted.celltype.l1", "predicted.annotation.l1", "predicted.id",
+                         "predicted_celltype", "predicted_cell_type", "cell_type", "celltype", "CellType", "annotation", "azimuth_label")
+    matched_type_col <- intersect(type_candidates, colnames(az_df))
+    if (length(matched_type_col) > 0) {
+      chosen_type_col <- matched_type_col[1]
+    } else {
+      fuzzy_matches <- grep("celltype|cell_type|annotation|predicted", colnames(az_df), ignore.case = TRUE, value = TRUE)
+      chosen_type_col <- if (length(fuzzy_matches) > 0) fuzzy_matches[1] else (if (ncol(az_df) >= 2) colnames(az_df)[2] else colnames(az_df)[1])
+    }
+    
+    az_celltypes <- as.character(az_df[[chosen_type_col]])
+    names(az_celltypes) <- az_barcodes
+    obj_cells <- colnames(multiome_obj)
+    
+    if (sum(obj_cells %in% names(az_celltypes)) > 0) {
+      matched_annotations <- az_celltypes[obj_cells]
+    } else if (sum(paste0(sample_id, "_", names(az_celltypes)) %in% obj_cells) > 0) {
+      names(az_celltypes) <- paste0(sample_id, "_", names(az_celltypes))
+      matched_annotations <- az_celltypes[obj_cells]
+    } else {
+      names(az_celltypes) <- sub(paste0("^", sample_id, "(_|-)"), "", names(az_celltypes))
+      matched_annotations <- az_celltypes[obj_cells]
+    }
+    multiome_obj$Azimuth_cellType <- matched_annotations
+    n_az <- sum(!is.na(multiome_obj$Azimuth_cellType) & multiome_obj$Azimuth_cellType != "")
+    message(sprintf("     Assigned Azimuth_cellType to %d / %d cells (%.1f%%)", 
+                    n_az, ncol(multiome_obj), (n_az / ncol(multiome_obj)) * 100))
+  } else {
+    multiome_obj$Azimuth_cellType <- "Unannotated"
+  }
+  
+  # ----------------------------------------------------------------------------
   # Step 3.7: Joint Dimensionality Reduction (RNA + ATAC + WNN)
   # ----------------------------------------------------------------------------
   message("  [5/6] Performing joint dimensionality reduction (LSI, PCA, WNN)...")
@@ -388,12 +461,23 @@ process_single_sample <- function(sample_id, rna_rds_path, peaks_path, fragments
   
   # Multi-panel diagnostic UMAP plot
   umap_pdf_path <- file.path(output_dir, paste0(sample_id, "_joint_wnn_umaps.pdf"))
-  pdf(umap_pdf_path, width = 15, height = 5)
+  pdf(umap_pdf_path, width = 14, height = 10)
   p1 <- DimPlot(multiome_obj, reduction = if ("umap" %in% Reductions(multiome_obj)) "umap" else "umap.atac", 
                 label = FALSE) + ggtitle(paste0(sample_id, " - RNA UMAP"))
   p2 <- DimPlot(multiome_obj, reduction = "umap.atac", label = FALSE) + ggtitle(paste0(sample_id, " - ATAC LSI UMAP"))
   p3 <- DimPlot(multiome_obj, reduction = "wnn.umap", label = FALSE) + ggtitle(paste0(sample_id, " - Joint WNN UMAP"))
-  print(p1 + p2 + p3 & theme(plot.title = element_text(hjust = 0.5)))
+  
+  p4 <- if ("Azimuth_cellType" %in% colnames(multiome_obj@meta.data) && 
+            any(!is.na(multiome_obj$Azimuth_cellType) & multiome_obj$Azimuth_cellType != "Unannotated")) {
+    DimPlot(multiome_obj, reduction = "wnn.umap", group.by = "Azimuth_cellType", label = TRUE, repel = TRUE) + 
+      ggtitle(paste0(sample_id, " - Azimuth Cell Types")) + theme(legend.position = "right")
+  } else NULL
+  
+  if (!is.null(p4)) {
+    print((p1 + p2) / (p3 + p4) & theme(plot.title = element_text(hjust = 0.5)))
+  } else {
+    print(p1 + p2 + p3 & theme(plot.title = element_text(hjust = 0.5)))
+  }
   dev.off()
   
   # ----------------------------------------------------------------------------
@@ -411,6 +495,7 @@ process_single_sample <- function(sample_id, rna_rds_path, peaks_path, fragments
     final_multiome_cells = n_final_multiome,
     pct_rna_retained     = round((n_final_multiome / n_rna_initial) * 100, 2),
     pct_atac_retained    = round((n_final_multiome / n_atac_post_qc) * 100, 2),
+    azimuth_annotated    = sum(!is.na(multiome_obj$Azimuth_cellType) & multiome_obj$Azimuth_cellType != "Unannotated"),
     median_nCount_RNA    = median(multiome_obj$nCount_RNA),
     median_nCount_ATAC   = median(multiome_obj$nCount_ATAC),
     median_TSS_enrichment= median(multiome_obj$TSS.enrichment),
@@ -491,6 +576,7 @@ if (!interactive()) {
       file.path(opt$outdir, row$sample_id)
     }
     meta_p <- if ("metadata_path" %in% colnames(row) && !is.na(row$metadata_path) && row$metadata_path != "") row$metadata_path else NULL
+    azimuth_p <- if ("azimuth_path" %in% colnames(row) && !is.na(row$azimuth_path) && row$azimuth_path != "") row$azimuth_path else NULL
     
     message(sprintf("\n>>> Processing sample %d of %d: %s <<<", i, nrow(samples_df), row$sample_id))
     
@@ -503,6 +589,7 @@ if (!interactive()) {
         fragments_path = row$fragments_path,
         output_dir     = sample_out,
         metadata_path  = meta_p,
+        azimuth_path   = azimuth_p,
         annotations    = annotations,
         params         = opt
       )

@@ -35,8 +35,9 @@ It is designed to let you step through each analytical stage interactively in RS
 6. **Diagnostic QC Plots**: Visualize distributions and filter cells using configurable thresholds.
 7. **Barcode Harmonization**: Harmonize sample prefixes and intersect high-quality cells.
 8. **Multiome Integration**: Combine the filtered ATAC assay and metadata into the RNA Seurat object.
-9. **Joint Dimensionality Reduction**: Run ATAC LSI (dims 2:30), RNA PCA (dims 1:40), and multimodal WNN UMAP.
-10. **Save Outputs**: Export the final merged `.rds` object and cell retention audit table.
+9. **Attach Azimuth Annotation**: Ingest Azimuth cell type predictions as `Azimuth_cellType`.
+10. **Joint Dimensionality Reduction**: Run ATAC LSI (dims 2:30), RNA PCA (dims 1:40), and multimodal WNN UMAP.
+11. **Save Outputs**: Export the final merged `.rds` object and cell retention audit table.
 
 ---
 
@@ -60,7 +61,11 @@ fragments_path <- "/data-pure/sequencing/ngs/NGS2026_10893/HG38/count/cellranger
 # 4. (Optional) Path to Cell Ranger ARC per-barcode metrics CSV
 metadata_path <- "/data-pure/sequencing/ngs/NGS2026_10893/HG38/count/cellranger/GG001AC/per_barcode_metrics.csv"
 
-# 5. Output directory for diagnostic plots and final merged object
+# 5. Path to Azimuth annotation output from alignment / secondary analysis
+# (e.g., azimuth_annotations.csv, predictions.tsv, azimuth_predictions.tsv, or .rds)
+azimuth_path <- "/data-pure/sequencing/ngs/NGS2026_10893/HG38/count/cellranger/GG001AC/azimuth_annotations.csv"
+
+# 6. Output directory for diagnostic plots and final merged object
 output_dir <- "./outputs/test_GG001AC"
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -75,8 +80,9 @@ dims_rna        <- 40     # RNA PCA dimensions (1:40)
 dims_atac_start <- 2      # Skip 1st ATAC LSI dimension (technical depth correlation)
 dims_atac_end   <- 30     # ATAC LSI dimensions (2:30)
 
-cat("Sample ID: ", sample_id, "\n")
-cat("Output Dir:", output_dir, "\n")
+cat("Sample ID:    ", sample_id, "\n")
+cat("Azimuth Path: ", azimuth_path, "\n")
+cat("Output Dir:   ", output_dir, "\n")
 ```
 
 ---
@@ -415,11 +421,159 @@ cat("Unified Multiome object created with assays:", Assays(multiome_obj), "\n")
 
 ---
 
-## 10. Joint Multimodal Dimensionality Reduction (RNA + ATAC + WNN)
+## 10. Add Azimuth Cell Type Annotation (`Azimuth_cellType`)
 
-We perform TF-IDF and SVD (LSI) on the ATAC modality, verify the RNA PCA reduction, and integrate both modalities using Weighted Nearest Neighbors (WNN).
+The alignment and preprocessing output for the 10x Multiome dataset includes an Azimuth cell-type annotation file (e.g., `azimuth_annotations.csv`, `predictions.tsv`, or `azimuth_predictions.tsv`).
 
-```{r dim_reduction, fig.width=15, fig.height=5}
+In this step, we:
+1. Locate and read the Azimuth annotation table.
+2. Auto-detect the barcode and cell-type prediction columns (e.g. `predicted.celltype.l2`, `predicted.annotation.l2`, or `cell_type`).
+3. Harmonize cell barcodes with the unified Multiome object (handling sample prefix matching).
+4. Store the cell-type classification in a new metadata column called **`Azimuth_cellType`**.
+
+```{r add_azimuth_annotation}
+cat("====================================================\n")
+cat("Attaching Azimuth Cell-Type Annotations\n")
+cat("====================================================\n")
+
+# Check if azimuth_path exists; if not, check common candidate filenames
+# inside the Cell Ranger alignment folder (dirname of fragments_path)
+if (!is.null(azimuth_path) && !file.exists(azimuth_path)) {
+  alignment_dir <- dirname(fragments_path)
+  candidate_names <- c(
+    "azimuth_annotations.csv",
+    "azimuth_predictions.tsv",
+    "predictions.tsv",
+    "azimuth_results.csv",
+    "azimuth_pred.tsv",
+    "azimuth_cell_types.csv",
+    "per_barcode_annotations.csv",
+    "azimuth/predictions.tsv",
+    "azimuth/azimuth_annotations.csv"
+  )
+  for (cand in candidate_names) {
+    full_cand <- file.path(alignment_dir, cand)
+    if (file.exists(full_cand)) {
+      cat("Auto-detected Azimuth annotation file at:", full_cand, "\n")
+      azimuth_path <- full_cand
+      break
+    }
+  }
+}
+
+if (!is.null(azimuth_path) && file.exists(azimuth_path)) {
+  cat("Reading Azimuth annotation file from:", azimuth_path, "\n")
+  
+  # Load based on extension
+  if (grepl("\\.rds$", azimuth_path, ignore.case = TRUE)) {
+    az_raw <- readRDS(azimuth_path)
+    if (inherits(az_raw, "Seurat")) {
+      az_df <- az_raw@meta.data
+    } else {
+      az_df <- as.data.frame(az_raw)
+    }
+  } else {
+    first_line <- readLines(azimuth_path, n = 1)
+    sep_char <- if (grepl("\t", first_line)) "\t" else ","
+    az_df <- read.table(
+      file = azimuth_path,
+      header = TRUE,
+      sep = sep_char,
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    )
+  }
+  
+  cat("Loaded Azimuth table with", nrow(az_df), "rows and", ncol(az_df), "columns.\n")
+  
+  # 1. Identify barcode column
+  barcode_candidates <- c("barcode", "Barcode", "cell", "Cell", "cell_barcode", "cb", "CB")
+  matched_bc_col <- intersect(barcode_candidates, colnames(az_df))
+  
+  if (length(matched_bc_col) > 0) {
+    az_barcodes <- as.character(az_df[[matched_bc_col[1]]])
+  } else if (!is.null(rownames(az_df)) && !all(rownames(az_df) == as.character(seq_len(nrow(az_df))))) {
+    az_barcodes <- rownames(az_df)
+  } else {
+    az_barcodes <- as.character(az_df[, 1])
+  }
+  
+  # 2. Identify the cell type prediction column
+  # We search for known Azimuth output column names in order of specificity
+  type_candidates <- c(
+    "Azimuth_cellType",
+    "predicted.celltype.l2",
+    "predicted.annotation.l2",
+    "predicted.celltype.l1",
+    "predicted.annotation.l1",
+    "predicted.id",
+    "predicted_celltype",
+    "predicted_cell_type",
+    "cell_type",
+    "celltype",
+    "CellType",
+    "annotation",
+    "azimuth_label"
+  )
+  matched_type_col <- intersect(type_candidates, colnames(az_df))
+  
+  if (length(matched_type_col) > 0) {
+    chosen_type_col <- matched_type_col[1]
+  } else {
+    fuzzy_matches <- grep("celltype|cell_type|annotation|predicted", colnames(az_df), ignore.case = TRUE, value = TRUE)
+    if (length(fuzzy_matches) > 0) {
+      chosen_type_col <- fuzzy_matches[1]
+    } else {
+      chosen_type_col <- if (ncol(az_df) >= 2) colnames(az_df)[2] else colnames(az_df)[1]
+    }
+  }
+  cat("Selected Azimuth annotation column:", chosen_type_col, "\n")
+  az_celltypes <- as.character(az_df[[chosen_type_col]])
+  names(az_celltypes) <- az_barcodes
+  
+  # 3. Barcode harmonization between Azimuth and multiome_obj
+  obj_cells <- colnames(multiome_obj)
+  
+  if (sum(obj_cells %in% names(az_celltypes)) > 0) {
+    matched_annotations <- az_celltypes[obj_cells]
+  } else if (sum(paste0(sample_id, "_", names(az_celltypes)) %in% obj_cells) > 0) {
+    cat("Harmonizing barcodes: prepending '", sample_id, "_' to Azimuth barcodes...\n", sep = "")
+    names(az_celltypes) <- paste0(sample_id, "_", names(az_celltypes))
+    matched_annotations <- az_celltypes[obj_cells]
+  } else {
+    stripped_az_names <- sub(paste0("^", sample_id, "(_|-)"), "", names(az_celltypes))
+    names(az_celltypes) <- stripped_az_names
+    matched_annotations <- az_celltypes[obj_cells]
+  }
+  
+  # 4. Attach Azimuth_cellType metadata column
+  multiome_obj$Azimuth_cellType <- matched_annotations
+  
+  n_annotated <- sum(!is.na(multiome_obj$Azimuth_cellType) & multiome_obj$Azimuth_cellType != "")
+  pct_annotated <- round((n_annotated / ncol(multiome_obj)) * 100, 1)
+  cat(sprintf("Successfully assigned Azimuth_cellType to %d / %d cells (%.1f%%)\n",
+              n_annotated, ncol(multiome_obj), pct_annotated))
+  
+  # Frequency table of annotated cell types
+  cat("\nAzimuth Cell Type Breakdown:\n")
+  print(table(multiome_obj$Azimuth_cellType, useNA = "ifany"))
+  
+} else {
+  warning(sprintf(
+    "Azimuth annotation file not found at: %s.\nSetting multiome_obj$Azimuth_cellType to 'Unannotated'.\nPlease verify path in Chunk 1.",
+    azimuth_path
+  ))
+  multiome_obj$Azimuth_cellType <- "Unannotated"
+}
+```
+
+---
+
+## 11. Joint Multimodal Dimensionality Reduction (RNA + ATAC + WNN)
+
+We perform TF-IDF and SVD (LSI) on the ATAC modality, verify the RNA PCA reduction, integrate both modalities using Weighted Nearest Neighbors (WNN), and plot the UMAPs including the new `Azimuth_cellType` annotation.
+
+```{r dim_reduction, fig.width=14, fig.height=10}
 # -----------------------------------------------------------------------------
 # 1. ATAC Modality: TF-IDF + SVD (LSI) + UMAP
 # -----------------------------------------------------------------------------
@@ -474,7 +628,7 @@ multiome_obj <- RunUMAP(
 )
 
 # -----------------------------------------------------------------------------
-# 4. Multi-Panel Diagnostic UMAP Plot
+# 4. Multi-Panel Diagnostic UMAP Plot with Azimuth Cell Types
 # -----------------------------------------------------------------------------
 p_rna_umap  <- DimPlot(multiome_obj, reduction = if ("umap" %in% Reductions(multiome_obj)) "umap" else "umap.atac", label = FALSE) + 
   ggtitle(paste0(sample_id, " - RNA UMAP"))
@@ -483,12 +637,26 @@ p_atac_umap <- DimPlot(multiome_obj, reduction = "umap.atac", label = FALSE) +
 p_wnn_umap  <- DimPlot(multiome_obj, reduction = "wnn.umap", label = FALSE) + 
   ggtitle(paste0(sample_id, " - Joint WNN UMAP"))
 
-combined_umap <- p_rna_umap + p_atac_umap + p_wnn_umap & theme(plot.title = element_text(hjust = 0.5))
+# Plot Azimuth annotations on WNN UMAP if available
+p_azimuth_umap <- if ("Azimuth_cellType" %in% colnames(multiome_obj@meta.data) && 
+                      any(!is.na(multiome_obj$Azimuth_cellType) & multiome_obj$Azimuth_cellType != "Unannotated")) {
+  DimPlot(multiome_obj, reduction = "wnn.umap", group.by = "Azimuth_cellType", label = TRUE, repel = TRUE) + 
+    ggtitle(paste0(sample_id, " - Azimuth Cell Types")) + 
+    theme(legend.position = "right")
+} else {
+  NULL
+}
+
+if (!is.null(p_azimuth_umap)) {
+  combined_umap <- (p_rna_umap + p_atac_umap) / (p_wnn_umap + p_azimuth_umap) & theme(plot.title = element_text(hjust = 0.5))
+} else {
+  combined_umap <- p_rna_umap + p_atac_umap + p_wnn_umap & theme(plot.title = element_text(hjust = 0.5))
+}
 print(combined_umap)
 
 # Export UMAP plot to PDF
 umap_pdf_path <- file.path(output_dir, paste0(sample_id, "_joint_wnn_umaps.pdf"))
-pdf(umap_pdf_path, width = 15, height = 5)
+pdf(umap_pdf_path, width = if (!is.null(p_azimuth_umap)) 14 else 15, height = if (!is.null(p_azimuth_umap)) 10 else 5)
 print(combined_umap)
 dev.off()
 cat("Joint UMAP figure saved to:", umap_pdf_path, "\n")
@@ -496,9 +664,9 @@ cat("Joint UMAP figure saved to:", umap_pdf_path, "\n")
 
 ---
 
-## 11. Save Unified Multiome Object & Retention Stats
+## 12. Save Unified Multiome Object & Retention Stats
 
-We save the final Seurat Multiome object and write a summary CSV table logging cell counts before and after merging.
+We save the final Seurat Multiome object (now including `Azimuth_cellType` in `@meta.data`) and write a summary CSV table logging cell counts before and after merging.
 
 ```{r save_outputs}
 # Save final RDS object
@@ -515,6 +683,7 @@ summary_stats <- data.frame(
   final_multiome_cells  = n_final_multiome,
   pct_rna_retained      = round((n_final_multiome / n_rna_initial) * 100, 2),
   pct_atac_retained     = round((n_final_multiome / n_atac_post_qc) * 100, 2),
+  azimuth_annotated     = sum(!is.na(multiome_obj$Azimuth_cellType) & multiome_obj$Azimuth_cellType != "Unannotated"),
   median_nCount_RNA     = median(multiome_obj$nCount_RNA),
   median_nCount_ATAC    = median(multiome_obj$nCount_ATAC),
   median_TSS_enrichment = median(multiome_obj$TSS.enrichment),
