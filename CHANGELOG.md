@@ -6,6 +6,7 @@ All notable changes, architectural updates, and code modifications for this repo
 
 ## [Current - 2026-10-21]
 ### Added
+- **`test_process_and_merge_atac.Rmd`**: Interactive, single-sample test notebook reproducing the entire ATAC QC, empty droplet avoidance, MACS2 peak cleaning, Signac QC, barcode harmonization, and multimodal WNN dimensionality reduction pipeline with separate chunks and explanatory comments.
 - **`process_and_merge_atac.R`**: Modular multi-sample batch pipeline script with core `process_single_sample()` function, `optparse` CLI, standalone Signac ATAC QC, empty droplet avoidance, barcode harmonization, and recombination with pre-processed RNA Seurat `.rds` objects.
 - **`samples_template.csv`**: Template sample sheet for multi-sample batch processing (`sample_id,rna_rds_path,peaks_path,fragments_path,output_dir`).
 - **`submit_multiome_batch.sh`**: SLURM batch job submission script for running batch processing on cluster compute nodes.

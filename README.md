@@ -115,6 +115,7 @@ flowchart TD
 ---
 
 ### 4. Supporting Cluster Scripts & Documentation
+* **`test_process_and_merge_atac.Rmd`**: Interactive, single-sample R Markdown test notebook mirroring the exact analytical steps of `process_and_merge_atac.R`. Designed for stepping through in RStudio with dedicated chunks and verbose commentary to validate QC cutoffs, droplet avoidance, and WNN parameters.
 * **`samples_template.csv`**: Template sample sheet for batch processing (`sample_id,rna_rds_path,peaks_path,fragments_path,output_dir`).
 * **`submit_multiome_batch.sh`**: SLURM batch submission script for running batch processing on cluster compute nodes.
 * **`SKILLS_BREAKDOWN_AND_RECOMMENDATIONS.md`**: Technical synthesis of ATAC skills suite, standardizing 501 bp peaks, and QC calibrations.
@@ -160,5 +161,6 @@ flowchart TD
 | `e9e06f6` | 2026-10-13 | `ATAC_Ganglioglioma.Rmd`, `02_Peak_Calling_MACS2.Rmd`, `SKILLS_BREAKDOWN_AND_RECOMMENDATIONS.md`, `TODO.md`, `CHANGELOG.md`, `README.md` | Calibrated QC thresholds (`nucleosome_signal < 4`), added TSS enrichment distribution exploration, FRiP/blacklist ratios, GeneActivity matrix, 501 bp summit-centered peak standardization (Corces 2018), and project roadmap. |
 | `6361bcc` | 2026-10-21 | `process_and_merge_atac.R`, `samples_template.csv`, `submit_multiome_array.sh`, `.gitignore`, `README.md`, `CHANGELOG.md` | Created modular multi-sample `process_and_merge_atac.R` pipeline script, SLURM array runner, sample template, and barcode harmonization logic. |
 | `d2ca4bd` | 2026-10-21 | `process_and_merge_atac.R`, `submit_multiome_batch.sh`, `README.md`, `CHANGELOG.md` | Streamlined `process_and_merge_atac.R` to Batch Mode only, structured `process_single_sample()` core logic, and added `gc()` memory cleanup between iterations. |
+| `Pending` | 2026-10-21 | `test_process_and_merge_atac.Rmd`, `README.md`, `CHANGELOG.md` | Added interactive single-sample test notebook `test_process_and_merge_atac.Rmd` reproducing batch pipeline logic step-by-step. |
 
 > **Agent Protocol:** Before every future `git push`, this README's **Git Push & Change Log** and **File Registry** must be updated with the newest modifications.
