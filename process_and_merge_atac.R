@@ -2,50 +2,37 @@
 # ==============================================================================
 # process_and_merge_atac.R
 # ==============================================================================
-# Modular, multi-sample pipeline for single-nucleus 10x Multiome ATAC-seq QC,
+# Modular batch pipeline for single-nucleus 10x Multiome ATAC-seq QC,
 # preprocessing, barcode harmonization, and recombination with pre-processed
-# RNA Seurat objects.
+# RNA Seurat objects across multiple samples.
 #
-# USAGE MODES:
-# ------------------------------------------------------------------------------
-# 1. Single-sample CLI mode (ideal for SLURM array jobs):
-#    Rscript process_and_merge_atac.R \
-#      --sample_id GG001AC \
-#      --rna_rds /path/to/GG001AC_rna_processed.rds \
-#      --peaks /path/to/ganglioglioma_peaks_GG001AC_peaks.narrowPeak \
-#      --fragments /path/to/atac_fragments.tsv.gz \
-#      --metadata /path/to/per_barcode_metrics.csv \
-#      --output_dir /path/to/outputs/GG001AC
-#
-# 2. Batch mode via sample sheet:
-#    Rscript process_and_merge_atac.R --sample_sheet samples.csv
+# USAGE:
+#   Rscript process_and_merge_atac.R --sample_sheet samples.csv
+#   Rscript process_and_merge_atac.R --sample_sheet samples.csv --outdir ./output
 #
 # SAMPLE SHEET FORMAT (samples.csv):
-# sample_id,rna_rds_path,peaks_path,fragments_path,metadata_path,output_dir
-# GG001AC,/data/rna/GG001AC.rds,/data/peaks/GG001AC.narrowPeak,/data/atac/fragments.tsv.gz,/data/meta/per_barcode.csv,/data/out/GG001AC
+# sample_id,rna_rds_path,peaks_path,fragments_path,output_dir
+# GG001AC,/path/to/GG001AC.rds,/path/to/peaks.narrowPeak,/path/to/fragments.tsv.gz,/path/to/out/GG001AC
+# GG002AC,/path/to/GG002AC.rds,/path/to/peaks.narrowPeak,/path/to/fragments.tsv.gz,/path/to/out/GG002AC
 # ==============================================================================
-# Early CLI check for --help / usage without loading heavy libraries
-# ==============================================================================
-raw_cli_args <- commandArgs(trailingOnly = TRUE)
-if (length(raw_cli_args) == 0 || any(c("-h", "--help") %in% raw_cli_args)) {
+
+# Fast CLI help check before heavy package loading
+raw_args <- commandArgs(trailingOnly = TRUE)
+if (any(c("-h", "--help") %in% raw_args)) {
   cat("\n==============================================================================\n")
-  cat("process_and_merge_atac.R: Modular Single-Cell Multiome Processing & Recombination\n")
+  cat("process_and_merge_atac.R: Batch Multiome Processing & Recombination Pipeline\n")
   cat("==============================================================================\n")
-  cat("Usage 1 (Batch Mode via Sample Sheet):\n")
-  cat("  Rscript process_and_merge_atac.R --sample_sheet samples.csv [--output_dir <dir>]\n\n")
-  cat("Usage 2 (Single-Sample Mode for SLURM Array Jobs):\n")
-  cat("  Rscript process_and_merge_atac.R \\\n")
-  cat("    --sample_id GG001AC \\\n")
-  cat("    --rna_rds /path/to/rna_processed.rds \\\n")
-  cat("    --peaks /path/to/peaks.narrowPeak \\\n")
-  cat("    --fragments /path/to/atac_fragments.tsv.gz \\\n")
-  cat("    [--metadata /path/to/per_barcode_metrics.csv] \\\n")
-  cat("    --output_dir /path/to/output/GG001AC\n\n")
-  cat("Optional Quality Control & Dimension Reduction Parameters:\n")
+  cat("Usage:\n")
+  cat("  Rscript process_and_merge_atac.R --sample_sheet samples.csv [--outdir <dir>]\n\n")
+  cat("Required Arguments:\n")
+  cat("  -s, --sample_sheet <file>      Path to CSV sample sheet with columns:\n")
+  cat("                                 sample_id, rna_rds_path, peaks_path, fragments_path, output_dir\n\n")
+  cat("Optional Output & Quality Control Parameters:\n")
+  cat("  -o, --outdir <dir>             Default fallback output directory [default: ./output]\n")
   cat("  --min_counts_atac <int>        Minimum ATAC counts per cell [default: 1000]\n")
   cat("  --max_counts_atac <int>        Maximum ATAC counts [default: auto (mean + 2*SD)]\n")
-  cat("  --max_nucleosome_signal <num>  Maximum nucleosome signal [default: 2]\n")
-  cat("  --min_tss_enrichment <num>     Minimum TSS enrichment score [default: 2]\n")
+  cat("  --max_nucleosome_signal <num>  Maximum nucleosome signal cutoff [default: 2]\n")
+  cat("  --min_tss_enrichment <num>     Minimum TSS enrichment cutoff [default: 2]\n")
   cat("  --dims_rna <int>               Number of RNA PCA dimensions for WNN [default: 40]\n")
   cat("  --dims_atac_start <int>        First ATAC LSI dimension to use (skipping depth) [default: 2]\n")
   cat("  --dims_atac_end <int>          Last ATAC LSI dimension to use [default: 30]\n")
@@ -54,6 +41,7 @@ if (length(raw_cli_args) == 0 || any(c("-h", "--help") %in% raw_cli_args)) {
 }
 
 suppressPackageStartupMessages({
+  library(optparse)
   library(Seurat)
   library(Signac)
   library(EnsDb.Hsapiens.v86)
@@ -69,59 +57,7 @@ suppressPackageStartupMessages({
 options(future.globals.maxSize = 8000 * 1024^2)
 
 # ==============================================================================
-# 1. Command-Line Argument Parser
-# ==============================================================================
-parse_args <- function() {
-  args <- commandArgs(trailingOnly = TRUE)
-  
-  # Default parameter values
-  params <- list(
-    sample_sheet           = NULL,
-    sample_id              = NULL,
-    rna_rds                = NULL,
-    peaks                  = NULL,
-    fragments              = NULL,
-    metadata               = NULL,
-    output_dir             = "./output",
-    min_counts_atac        = 1000,
-    max_counts_atac        = NULL, # NULL -> auto-calculate (mean + 2*SD)
-    max_nucleosome_signal  = 2,
-    min_tss_enrichment     = 2,
-    dims_rna               = 40,
-    dims_atac_start        = 2,
-    dims_atac_end          = 30
-  )
-  
-  i <- 1
-  while (i <= length(args)) {
-    arg <- args[i]
-    if (grepl("^--", arg)) {
-      key <- sub("^--", "", arg)
-      key <- gsub("-", "_", key)
-      if (i + 1 <= length(args) && !grepl("^--", args[i + 1])) {
-        val <- args[i + 1]
-        i <- i + 2
-      } else {
-        val <- TRUE
-        i <- i + 1
-      }
-      
-      # Type conversions
-      if (key %in% c("min_counts_atac", "max_counts_atac", "max_nucleosome_signal", 
-                     "min_tss_enrichment", "dims_rna", "dims_atac_start", "dims_atac_end")) {
-        val <- as.numeric(val)
-      }
-      params[[key]] <- val
-    } else {
-      i <- i + 1
-    }
-  }
-  
-  return(params)
-}
-
-# ==============================================================================
-# 2. Annotation & Reference Setup
+# 1. Genome Annotation Setup
 # ==============================================================================
 setup_annotations <- function() {
   message("[SETUP] Initializing EnsDb.Hsapiens.v86 annotations for hg38...")
@@ -132,7 +68,7 @@ setup_annotations <- function() {
 }
 
 # ==============================================================================
-# 3. Peak File Ingestion
+# 2. Peak Ingestion & Cleaning
 # ==============================================================================
 load_and_clean_peaks <- function(peaks_path) {
   message(sprintf("  -> Reading peaks from: %s", peaks_path))
@@ -147,7 +83,7 @@ load_and_clean_peaks <- function(peaks_path) {
                     "fold_change", "neg_log10pvalue", "neg_log10qvalue", "relative_summit_pos")
     )
     
-    # Optional q-value filtering (FDR <= 0.05 / -log10(q) >= 1.3)
+    # Statistical significance filtering (FDR <= 0.05 / -log10(q) >= 1.3)
     if ("neg_log10qvalue" %in% colnames(peaks_df)) {
       n_raw <- nrow(peaks_df)
       peaks_df <- peaks_df[peaks_df$neg_log10qvalue >= 1.3, ]
@@ -185,11 +121,11 @@ load_and_clean_peaks <- function(peaks_path) {
 }
 
 # ==============================================================================
-# 4. Core Single-Sample Processing Function
+# 3. Core Single-Sample Processing Function
 # ==============================================================================
-process_sample <- function(sample_id, rna_rds_path, peaks_path, fragments_path, 
-                           metadata_path = NULL, output_dir = "./output", 
-                           annotations, params) {
+process_single_sample <- function(sample_id, rna_rds_path, peaks_path, fragments_path, 
+                                  output_dir = "./output", metadata_path = NULL, 
+                                  annotations = NULL, params = list()) {
   
   cat("\n==============================================================================\n")
   message(sprintf("[SAMPLE] Starting processing for Sample ID: %s", sample_id))
@@ -197,8 +133,21 @@ process_sample <- function(sample_id, rna_rds_path, peaks_path, fragments_path,
   
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
   
+  if (is.null(annotations)) {
+    annotations <- setup_annotations()
+  }
+  
+  # Parameter defaults if not explicitly passed
+  min_counts_atac       <- if (!is.null(params$min_counts_atac)) params$min_counts_atac else 1000
+  max_counts_atac       <- if (!is.null(params$max_counts_atac)) params$max_counts_atac else NULL
+  max_nucleosome_signal <- if (!is.null(params$max_nucleosome_signal)) params$max_nucleosome_signal else 2.0
+  min_tss_enrichment    <- if (!is.null(params$min_tss_enrichment)) params$min_tss_enrichment else 2.0
+  dims_rna              <- if (!is.null(params$dims_rna)) params$dims_rna else 40
+  dims_atac_start       <- if (!is.null(params$dims_atac_start)) params$dims_atac_start else 2
+  dims_atac_end         <- if (!is.null(params$dims_atac_end)) params$dims_atac_end else 30
+  
   # ----------------------------------------------------------------------------
-  # Step 4.1: Load Pre-Processed RNA Object to Identify Valid Nuclei
+  # Step 3.1: Load Pre-Processed RNA Object to Identify Valid Nuclei
   # ----------------------------------------------------------------------------
   message(sprintf("  [1/6] Loading pre-processed RNA Seurat object: %s", rna_rds_path))
   if (!file.exists(rna_rds_path)) {
@@ -213,7 +162,7 @@ process_sample <- function(sample_id, rna_rds_path, peaks_path, fragments_path,
   raw_rna_barcodes <- sub(paste0("^", sample_id, "(_|-)"), "", colnames(rna_obj))
   
   # ----------------------------------------------------------------------------
-  # Step 4.2: Ingest ATAC Peaks & Quantify Fragments on Valid Barcodes
+  # Step 3.2: Ingest ATAC Peaks & Quantify Fragments on Valid Barcodes
   # ----------------------------------------------------------------------------
   message("  [2/6] Building ATAC ChromatinAssay...")
   peaks <- load_and_clean_peaks(peaks_path)
@@ -222,7 +171,7 @@ process_sample <- function(sample_id, rna_rds_path, peaks_path, fragments_path,
     stop(sprintf("ATAC fragments file not found: %s", fragments_path))
   }
   
-  # Optimize: constrain Fragment object to RNA barcodes to skip empty droplet quantification
+  # Optimization: restrict Fragment scanning to validated RNA barcodes to skip empty droplets
   message(sprintf("     Restricting fragment scanning to %d validated RNA barcodes...", length(raw_rna_barcodes)))
   frag_obj <- CreateFragmentObject(
     path = fragments_path,
@@ -265,7 +214,7 @@ process_sample <- function(sample_id, rna_rds_path, peaks_path, fragments_path,
   }
   
   # ----------------------------------------------------------------------------
-  # Step 4.3: Compute Signac ATAC QC Metrics (Explicitly avoiding ATACqc)
+  # Step 3.3: Compute Signac ATAC QC Metrics (Explicitly avoiding ATACqc)
   # ----------------------------------------------------------------------------
   message("  [3/6] Computing Signac QC metrics (NucleosomeSignal & TSSEnrichment)...")
   DefaultAssay(atac_obj) <- "ATAC"
@@ -276,12 +225,11 @@ process_sample <- function(sample_id, rna_rds_path, peaks_path, fragments_path,
   # 2. Transcription Start Site (TSS) enrichment score
   atac_obj <- TSSEnrichment(object = atac_obj, fast = FALSE)
   
-  # Define TSS enrichment grouping for diagnostic profile visualization
-  min_tss <- params$min_tss_enrichment
-  atac_obj$high.tss <- ifelse(atac_obj$TSS.enrichment >= min_tss, "High_TSS", "Low_TSS")
+  # Grouping for diagnostic profile visualization
+  atac_obj$high.tss <- ifelse(atac_obj$TSS.enrichment >= min_tss_enrichment, "High_TSS", "Low_TSS")
   
   # ----------------------------------------------------------------------------
-  # Step 4.4: Export Diagnostic QC Plots to PDF
+  # Step 3.4: Export Diagnostic QC Plots to PDF
   # ----------------------------------------------------------------------------
   qc_pdf_path <- file.path(output_dir, paste0(sample_id, "_atac_qc_diagnostics.pdf"))
   message(sprintf("     Exporting diagnostic QC plots to: %s", qc_pdf_path))
@@ -300,17 +248,17 @@ process_sample <- function(sample_id, rna_rds_path, peaks_path, fragments_path,
   # TSS Enrichment signal profile across TSS +/- 2000 bp
   tryCatch({
     p_tss <- TSSPlot(atac_obj, group.by = "high.tss") + 
-      ggtitle(paste0(sample_id, " - TSS Enrichment Signal Profile (cutoff = ", min_tss, ")"))
+      ggtitle(paste0(sample_id, " - TSS Enrichment Signal Profile (cutoff = ", min_tss_enrichment, ")"))
     print(p_tss)
   }, error = function(e) {
     message(sprintf("     Notice: Could not generate TSSPlot: %s", e$message))
   })
   
   # Correlation scatter: nCount_ATAC vs TSS.enrichment
-  p_scatter <- ggplot(atac_obj@meta.data, aes(x = nCount_ATAC, y = TSS.enrichment, color = nucleosome_signal < params$max_nucleosome_signal)) +
+  p_scatter <- ggplot(atac_obj@meta.data, aes(x = nCount_ATAC, y = TSS.enrichment, color = nucleosome_signal <= max_nucleosome_signal)) +
     geom_point(alpha = 0.4, size = 0.8) +
     scale_x_log10() +
-    geom_hline(yintercept = min_tss, linetype = "dashed", color = "firebrick") +
+    geom_hline(yintercept = min_tss_enrichment, linetype = "dashed", color = "firebrick") +
     scale_color_manual(values = c("TRUE" = "#1a73e8", "FALSE" = "#d93025"), name = "Pass Nucleosome") +
     theme_minimal() +
     labs(title = paste0(sample_id, " - TSS vs ATAC Depth"), x = "nCount_ATAC (log10)", y = "TSS Enrichment Score")
@@ -319,34 +267,33 @@ process_sample <- function(sample_id, rna_rds_path, peaks_path, fragments_path,
   dev.off()
   
   # ----------------------------------------------------------------------------
-  # Step 4.5: Filter ATAC Cells using Configurable Thresholds
+  # Step 3.5: Filter ATAC Cells using Configurable Thresholds
   # ----------------------------------------------------------------------------
-  min_c <- params$min_counts_atac
-  max_c <- params$max_counts_atac
+  min_c <- min_counts_atac
+  max_c <- max_counts_atac
   if (is.null(max_c) || is.na(max_c)) {
     # Dynamically compute upper depth cutoff: mean + 2*SD (capped at 100k)
     max_c <- round(mean(atac_obj$nCount_ATAC) + 2 * sd(atac_obj$nCount_ATAC))
     max_c <- min(max(max_c, 50000), 100000)
     message(sprintf("     Auto-calculated upper depth cutoff (mean + 2*SD): %d", max_c))
   }
-  max_nuc <- params$max_nucleosome_signal
   
   message(sprintf("     Applying ATAC QC Filters: %d <= nCount_ATAC <= %d, nucleosome_signal <= %.1f, TSS.enrichment >= %.1f",
-                  min_c, max_c, max_nuc, min_tss))
+                  min_c, max_c, max_nucleosome_signal, min_tss_enrichment))
   
   atac_filtered <- subset(
     x = atac_obj,
     subset = nCount_ATAC >= min_c &
              nCount_ATAC <= max_c &
-             nucleosome_signal <= max_nuc &
-             TSS.enrichment >= min_tss
+             nucleosome_signal <= max_nucleosome_signal &
+             TSS.enrichment >= min_tss_enrichment
   )
   n_atac_post_qc <- ncol(atac_filtered)
   message(sprintf("     ATAC cells passing QC: %d / %d (%.1f%%)", 
                   n_atac_post_qc, n_atac_quantified, (n_atac_post_qc / n_atac_quantified) * 100))
   
   # ----------------------------------------------------------------------------
-  # Step 4.6: Barcode Harmonization & Recombination with RNA Object
+  # Step 3.6: Barcode Harmonization & Recombination with RNA Object
   # ----------------------------------------------------------------------------
   message("  [4/6] Harmonizing cell barcodes and intersecting with RNA...")
   
@@ -391,7 +338,7 @@ process_sample <- function(sample_id, rna_rds_path, peaks_path, fragments_path,
   }
   
   # ----------------------------------------------------------------------------
-  # Step 4.7: Joint Dimensionality Reduction (RNA + ATAC + WNN)
+  # Step 3.7: Joint Dimensionality Reduction (RNA + ATAC + WNN)
   # ----------------------------------------------------------------------------
   message("  [5/6] Performing joint dimensionality reduction (LSI, PCA, WNN)...")
   
@@ -402,7 +349,7 @@ process_sample <- function(sample_id, rna_rds_path, peaks_path, fragments_path,
   multiome_obj <- RunSVD(multiome_obj, reduction.name = "lsi", reduction.key = "lsi_", verbose = FALSE)
   
   # Skip 1st LSI dimension (technical depth correlation)
-  lsi_dims <- params$dims_atac_start:params$dims_atac_end
+  lsi_dims <- dims_atac_start:dims_atac_end
   multiome_obj <- RunUMAP(
     multiome_obj,
     reduction = "lsi",
@@ -420,9 +367,9 @@ process_sample <- function(sample_id, rna_rds_path, peaks_path, fragments_path,
   }
   
   # 3. Weighted Nearest Neighbor (WNN) Multimodal Integration
-  rna_dims <- 1:params$dims_rna
+  rna_dims <- 1:dims_rna
   message(sprintf("     Computing WNN neighbors (RNA dims 1:%d, ATAC dims %d:%d)...", 
-                  params$dims_rna, params$dims_atac_start, params$dims_atac_end))
+                  dims_rna, dims_atac_start, dims_atac_end))
   
   multiome_obj <- FindMultiModalNeighbors(
     object = multiome_obj,
@@ -450,7 +397,7 @@ process_sample <- function(sample_id, rna_rds_path, peaks_path, fragments_path,
   dev.off()
   
   # ----------------------------------------------------------------------------
-  # Step 4.8: Save Final Unified Multiome Object & Summary Stats
+  # Step 3.8: Save Final Unified Multiome Object & Summary Stats
   # ----------------------------------------------------------------------------
   final_rds_path <- file.path(output_dir, paste0(sample_id, "_multiome_merged.rds"))
   message(sprintf("  [6/6] Saving unified Multiome Seurat object to: %s", final_rds_path))
@@ -481,98 +428,106 @@ process_sample <- function(sample_id, rna_rds_path, peaks_path, fragments_path,
 }
 
 # ==============================================================================
-# 5. Main Execution Driver
+# 4. CLI Entry Point using optparse (Batch Mode)
 # ==============================================================================
-main <- function() {
-  params <- parse_args()
+if (!interactive()) {
+  option_list <- list(
+    make_option(c("-s", "--sample_sheet"), type = "character", default = NULL,
+                help = "Path to CSV sample sheet (columns: sample_id, rna_rds_path, peaks_path, fragments_path, output_dir)", metavar = "FILE"),
+    make_option(c("-o", "--outdir"), type = "character", default = "./output",
+                help = "Default fallback output directory if not in CSV [default: %default]", metavar = "DIR"),
+    make_option(c("--min_counts_atac"), type = "integer", default = 1000,
+                help = "Minimum ATAC counts per cell [default: %default]", metavar = "INT"),
+    make_option(c("--max_counts_atac"), type = "integer", default = NULL,
+                help = "Maximum ATAC counts [default: auto (mean + 2*SD)]", metavar = "INT"),
+    make_option(c("--max_nucleosome_signal"), type = "numeric", default = 2.0,
+                help = "Maximum nucleosome signal cutoff [default: %default]", metavar = "NUM"),
+    make_option(c("--min_tss_enrichment"), type = "numeric", default = 2.0,
+                help = "Minimum TSS enrichment cutoff [default: %default]", metavar = "NUM"),
+    make_option(c("--dims_rna"), type = "integer", default = 40,
+                help = "Number of RNA PCA dimensions for WNN [default: %default]", metavar = "INT"),
+    make_option(c("--dims_atac_start"), type = "integer", default = 2,
+                help = "First LSI dimension for ATAC (skipping depth) [default: %default]", metavar = "INT"),
+    make_option(c("--dims_atac_end"), type = "integer", default = 30,
+                help = "Last LSI dimension for ATAC [default: %default]", metavar = "INT")
+  )
   
-  # Setup genome annotations once
+  opt_parser <- OptionParser(
+    usage = "%prog --sample_sheet samples.csv [options]",
+    option_list = option_list,
+    description = "Batch multi-sample ATAC QC and RNA recombination pipeline for 10x Multiome."
+  )
+  opt <- parse_args(opt_parser)
+  
+  if (is.null(opt$sample_sheet)) {
+    print_help(opt_parser)
+    stop("ERROR: Missing required argument: --sample_sheet <samples.csv>")
+  }
+  
+  if (!file.exists(opt$sample_sheet)) {
+    stop(sprintf("ERROR: Sample sheet file not found: %s", opt$sample_sheet))
+  }
+  
+  message(sprintf("[BATCH MODE] Reading sample sheet: %s", opt$sample_sheet))
+  samples_df <- read.csv(opt$sample_sheet, header = TRUE, stringsAsFactors = FALSE)
+  
+  required_cols <- c("sample_id", "rna_rds_path", "peaks_path", "fragments_path")
+  missing_cols <- setdiff(required_cols, colnames(samples_df))
+  if (length(missing_cols) > 0) {
+    stop(sprintf("Sample sheet missing required columns: %s", paste(missing_cols, collapse = ", ")))
+  }
+  
+  # Setup genome annotations once for all samples
   annotations <- setup_annotations()
   
   all_summaries <- list()
+  dir.create(opt$outdir, showWarnings = FALSE, recursive = TRUE)
   
-  if (!is.null(params$sample_sheet) && file.exists(params$sample_sheet)) {
-    # --------------------------------------------------------------------------
-    # Batch Mode: Process All Samples in CSV Sample Sheet
-    # --------------------------------------------------------------------------
-    message(sprintf("[BATCH MODE] Reading sample sheet from: %s", params$sample_sheet))
-    samples_df <- read.csv(params$sample_sheet, header = TRUE, stringsAsFactors = FALSE)
+  for (i in seq_len(nrow(samples_df))) {
+    row <- samples_df[i, ]
+    sample_out <- if ("output_dir" %in% colnames(row) && !is.na(row$output_dir) && row$output_dir != "") {
+      row$output_dir
+    } else {
+      file.path(opt$outdir, row$sample_id)
+    }
+    meta_p <- if ("metadata_path" %in% colnames(row) && !is.na(row$metadata_path) && row$metadata_path != "") row$metadata_path else NULL
     
-    required_cols <- c("sample_id", "rna_rds_path", "peaks_path", "fragments_path")
-    missing_cols <- setdiff(required_cols, colnames(samples_df))
-    if (length(missing_cols) > 0) {
-      stop(sprintf("Sample sheet is missing required columns: %s", paste(missing_cols, collapse = ", ")))
+    message(sprintf("\n>>> Processing sample %d of %d: %s <<<", i, nrow(samples_df), row$sample_id))
+    
+    # Execute single sample inside tryCatch to prevent loop termination on error
+    stat <- tryCatch({
+      process_single_sample(
+        sample_id      = row$sample_id,
+        rna_rds_path   = row$rna_rds_path,
+        peaks_path     = row$peaks_path,
+        fragments_path = row$fragments_path,
+        output_dir     = sample_out,
+        metadata_path  = meta_p,
+        annotations    = annotations,
+        params         = opt
+      )
+    }, error = function(e) {
+      message(sprintf("ERROR in sample %s: %s", row$sample_id, e$message))
+      return(NULL)
+    })
+    
+    if (!is.null(stat)) {
+      all_summaries[[row$sample_id]] <- stat
     }
     
-    for (i in seq_len(nrow(samples_df))) {
-      row <- samples_df[i, ]
-      out_d <- if ("output_dir" %in% colnames(row) && !is.na(row$output_dir) && row$output_dir != "") {
-        row$output_dir
-      } else {
-        file.path(params$output_dir, row$sample_id)
-      }
-      
-      meta_p <- if ("metadata_path" %in% colnames(row) && !is.na(row$metadata_path)) row$metadata_path else NULL
-      
-      stat <- tryCatch({
-        process_sample(
-          sample_id      = row$sample_id,
-          rna_rds_path   = row$rna_rds_path,
-          peaks_path     = row$peaks_path,
-          fragments_path = row$fragments_path,
-          metadata_path  = meta_p,
-          output_dir     = out_d,
-          annotations    = annotations,
-          params         = params
-        )
-      }, error = function(e) {
-        message(sprintf("ERROR processing sample %s: %s", row$sample_id, e$message))
-        return(NULL)
-      })
-      
-      if (!is.null(stat)) {
-        all_summaries[[row$sample_id]] <- stat
-      }
-    }
-    
-    # Save combined multi-sample summary CSV
-    if (length(all_summaries) > 0) {
-      combined_summary <- do.call(rbind, all_summaries)
-      batch_csv_path <- file.path(params$output_dir, "batch_multiome_processing_summary.csv")
-      write.csv(combined_summary, file = batch_csv_path, row.names = FALSE)
-      message(sprintf("\n[SUMMARY] Batch processing completed. Summary saved to: %s", batch_csv_path))
-    }
-    
-  } else if (!is.null(params$sample_id) && !is.null(params$rna_rds) && 
-             !is.null(params$peaks) && !is.null(params$fragments)) {
-    # --------------------------------------------------------------------------
-    # Single-Sample CLI Mode (SLURM Array Friendly)
-    # --------------------------------------------------------------------------
-    stat <- process_sample(
-      sample_id      = params$sample_id,
-      rna_rds_path   = params$rna_rds,
-      peaks_path     = params$peaks,
-      fragments_path = params$fragments,
-      metadata_path  = params$metadata,
-      output_dir     = params$output_dir,
-      annotations    = annotations,
-      params         = params
-    )
-  } else {
-    cat("\nERROR: Insufficient arguments provided.\n\n")
-    cat("Usage 1 (Batch Mode):\n")
-    cat("  Rscript process_and_merge_atac.R --sample_sheet samples.csv\n\n")
-    cat("Usage 2 (Single-Sample Mode):\n")
-    cat("  Rscript process_and_merge_atac.R \\\n")
-    cat("    --sample_id <ID> \\\n")
-    cat("    --rna_rds <path_to_rna.rds> \\\n")
-    cat("    --peaks <path_to_peaks.narrowPeak> \\\n")
-    cat("    --fragments <path_to_fragments.tsv.gz> \\\n")
-    cat("    --output_dir <output_directory>\n\n")
-    quit(status = 1)
+    # Run garbage collection between iterations to free memory on cluster nodes
+    message(sprintf("Running garbage collection (gc) after sample %s...", row$sample_id))
+    gc(verbose = FALSE)
   }
-}
-
-if (!interactive()) {
-  main()
+  
+  # Save cumulative multi-sample summary CSV
+  if (length(all_summaries) > 0) {
+    combined_df <- do.call(rbind, all_summaries)
+    batch_summary_path <- file.path(opt$outdir, "batch_multiome_processing_summary.csv")
+    write.csv(combined_df, file = batch_summary_path, row.names = FALSE)
+    message(sprintf("\n[SUMMARY] Batch processing completed. Summary written to: %s", batch_summary_path))
+  }
+  
+  message("\n[COMPLETE] All samples in sample sheet processed successfully.")
+  quit(save = "no", status = 0)
 }

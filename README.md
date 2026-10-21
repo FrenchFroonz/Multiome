@@ -96,7 +96,7 @@ flowchart TD
 ---
 
 ### 3. `process_and_merge_atac.R` (Modular Multi-Sample ATAC QC & RNA Recombination)
-* **Purpose:** Refactors and scales single-sample ATAC QC and recombination into a high-throughput, CLI- and SLURM-compatible pipeline.
+* **Purpose:** Modular batch pipeline for single-nucleus ATAC QC, empty droplet avoidance, barcode harmonization, and recombination with pre-processed RNA Seurat objects across multiple samples.
 * **Key Features:**
   - Ingests pre-processed RNA Seurat objects (`.rds`) from external pipelines.
   - Automatically restricts `CreateFragmentObject` and `FeatureMatrix` scanning to validated RNA nucleus barcodes, bypassing empty droplets and speeding up quantification by up to 50x.
@@ -105,16 +105,18 @@ flowchart TD
   - Automatically harmonizes barcode prefixes between RNA and ATAC (`RenameCells`).
   - Subsets to high-quality intersected cells, integrates ATAC `ChromatinAssay` and non-redundant metadata into the RNA object.
   - Computes joint dimensional reductions: ATAC LSI (dims 2:30), refreshes/verifies RNA PCA (dims 1:40), and computes Weighted Nearest Neighbor (`FindMultiModalNeighbors` + `wnn.umap`).
-  - Exports `<sample_id>_multiome_merged.rds`, `<sample_id>_joint_wnn_umaps.pdf`, and `<sample_id>_cell_retention_summary.csv`.
-* **Execution Modes:**
-  - **Single-Sample CLI / SLURM Array:** `Rscript process_and_merge_atac.R --sample_id GG001AC --rna_rds /path/to/rna.rds --peaks /path/to/peaks.narrowPeak --fragments /path/to/fragments.tsv.gz --output_dir /path/to/out`
-  - **Batch Mode via CSV:** `Rscript process_and_merge_atac.R --sample_sheet samples.csv`
+  - Executes samples inside a `tryCatch()` block and invokes `gc()` between iterations to free memory on interactive nodes.
+  - Exports `<sample_id>_multiome_merged.rds`, `<sample_id>_joint_wnn_umaps.pdf`, `<sample_id>_cell_retention_summary.csv`, and a master `batch_multiome_processing_summary.csv`.
+* **Execution:**
+  ```bash
+  Rscript process_and_merge_atac.R --sample_sheet samples.csv [--outdir ./output]
+  ```
 
 ---
 
 ### 4. Supporting Cluster Scripts & Documentation
-* **`samples_template.csv`**: Template sample sheet for multi-sample batch processing.
-* **`submit_multiome_array.sh`**: Production SLURM job array script for parallelizing sample processing on HPC nodes.
+* **`samples_template.csv`**: Template sample sheet for batch processing (`sample_id,rna_rds_path,peaks_path,fragments_path,output_dir`).
+* **`submit_multiome_batch.sh`**: SLURM batch submission script for running batch processing on cluster compute nodes.
 * **`SKILLS_BREAKDOWN_AND_RECOMMENDATIONS.md`**: Technical synthesis of ATAC skills suite, standardizing 501 bp peaks, and QC calibrations.
 * **`TODO.md`**: Project roadmap tracking downstream modules (TF Motifs/chromVAR, Enhancer-Gene Linking, Pseudobulk DARs).
 * **`CHANGELOG.md`**: Chronological log of all repository modifications.
@@ -157,5 +159,6 @@ flowchart TD
 | `59be756` | 2026-10-12 | `02_Peak_Calling_MACS2.Rmd`, `README.md` | Fixed `Fragments()` generic error by explicitly targeting `ATAC_gang[["ATAC"]]` and setting `DefaultAssay` to ATAC (preventing method dispatch failure against Seurat v5 Assay5). |
 | `e9e06f6` | 2026-10-13 | `ATAC_Ganglioglioma.Rmd`, `02_Peak_Calling_MACS2.Rmd`, `SKILLS_BREAKDOWN_AND_RECOMMENDATIONS.md`, `TODO.md`, `CHANGELOG.md`, `README.md` | Calibrated QC thresholds (`nucleosome_signal < 4`), added TSS enrichment distribution exploration, FRiP/blacklist ratios, GeneActivity matrix, 501 bp summit-centered peak standardization (Corces 2018), and project roadmap. |
 | `6361bcc` | 2026-10-21 | `process_and_merge_atac.R`, `samples_template.csv`, `submit_multiome_array.sh`, `.gitignore`, `README.md`, `CHANGELOG.md` | Created modular multi-sample `process_and_merge_atac.R` pipeline script, SLURM array runner, sample template, and barcode harmonization logic. |
+| *(Pending)* | 2026-10-21 | `process_and_merge_atac.R`, `submit_multiome_batch.sh`, `README.md`, `CHANGELOG.md` | Streamlined `process_and_merge_atac.R` to Batch Mode only, structured `process_single_sample()` core logic, and added `gc()` memory cleanup between iterations. |
 
 > **Agent Protocol:** Before every future `git push`, this README's **Git Push & Change Log** and **File Registry** must be updated with the newest modifications.
