@@ -156,6 +156,6 @@ flowchart TD
 | `c4d16f0` | 2026-10-12 | `README.md` | Added comprehensive pipeline documentation, architecture diagrams, file registry, and structured push changelog. |
 | `59be756` | 2026-10-12 | `02_Peak_Calling_MACS2.Rmd`, `README.md` | Fixed `Fragments()` generic error by explicitly targeting `ATAC_gang[["ATAC"]]` and setting `DefaultAssay` to ATAC (preventing method dispatch failure against Seurat v5 Assay5). |
 | `e9e06f6` | 2026-10-13 | `ATAC_Ganglioglioma.Rmd`, `02_Peak_Calling_MACS2.Rmd`, `SKILLS_BREAKDOWN_AND_RECOMMENDATIONS.md`, `TODO.md`, `CHANGELOG.md`, `README.md` | Calibrated QC thresholds (`nucleosome_signal < 4`), added TSS enrichment distribution exploration, FRiP/blacklist ratios, GeneActivity matrix, 501 bp summit-centered peak standardization (Corces 2018), and project roadmap. |
-| *(Pending)* | 2026-10-21 | `process_and_merge_atac.R`, `samples_template.csv`, `submit_multiome_array.sh`, `.gitignore`, `README.md`, `CHANGELOG.md` | Created modular multi-sample `process_and_merge_atac.R` pipeline script, SLURM array runner, sample template, and barcode harmonization logic. |
+| `6361bcc` | 2026-10-21 | `process_and_merge_atac.R`, `samples_template.csv`, `submit_multiome_array.sh`, `.gitignore`, `README.md`, `CHANGELOG.md` | Created modular multi-sample `process_and_merge_atac.R` pipeline script, SLURM array runner, sample template, and barcode harmonization logic. |
 
 > **Agent Protocol:** Before every future `git push`, this README's **Git Push & Change Log** and **File Registry** must be updated with the newest modifications.
