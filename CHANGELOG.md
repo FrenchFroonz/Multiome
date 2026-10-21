@@ -4,7 +4,16 @@ All notable changes, architectural updates, and code modifications for this repo
 
 ---
 
-## [Current - 2026-10-13]
+## [Current - 2026-10-21]
+### Added
+- **`process_and_merge_atac.R`**: Modular multi-sample R pipeline script supporting standalone Signac ATAC QC, empty droplet avoidance, barcode harmonization, and recombination with pre-processed RNA Seurat `.rds` objects.
+- **`samples_template.csv`**: Template sample sheet for multi-sample batch processing.
+- **`submit_multiome_array.sh`**: SLURM job array submission script for parallelizing multiome processing across samples on HPC compute nodes.
+- **CSV Whitelist in `.gitignore`**: Whitelisted `*.csv` files to enable tracking of sample sheets and configuration templates.
+
+---
+
+## [2026-10-13]
 ### Added
 - **`SKILLS_BREAKDOWN_AND_RECOMMENDATIONS.md`**: Detailed technical synthesis of newly added `bio-atac-seq-*` skills, comparison with existing pipeline, and scientific rationale for optimizations.
 - **`TODO.md`**: Project roadmap defining upcoming scripts (03: TF Motifs & chromVAR, 04: Enhancer-Gene Linking, 05: Pseudobulk DARs, 06: Footprinting) and cluster pseudobulk peak calling.

@@ -95,9 +95,28 @@ flowchart TD
 
 ---
 
-### 3. Documentation & Tracking Files
-* **`SKILLS_BREAKDOWN_AND_RECOMMENDATIONS.md`**: Full technical synthesis of newly added ATAC skills suite, comparing existing practices and explaining rationales for fixes.
-* **`TODO.md`**: Project roadmap tracking upcoming scripts (03: TF Motifs/chromVAR, 04: Enhancer-Gene Linking, 05: Pseudobulk DARs) and future cluster pseudobulk peak calling.
+### 3. `process_and_merge_atac.R` (Modular Multi-Sample ATAC QC & RNA Recombination)
+* **Purpose:** Refactors and scales single-sample ATAC QC and recombination into a high-throughput, CLI- and SLURM-compatible pipeline.
+* **Key Features:**
+  - Ingests pre-processed RNA Seurat objects (`.rds`) from external pipelines.
+  - Automatically restricts `CreateFragmentObject` and `FeatureMatrix` scanning to validated RNA nucleus barcodes, bypassing empty droplets and speeding up quantification by up to 50x.
+  - Calculates standalone Signac ATAC QC metrics (`NucleosomeSignal`, `TSSEnrichment(fast = FALSE)`). Note: explicitly avoids `ATACqc()` since `fragtk` is absent on the HPC cluster.
+  - Generates comprehensive diagnostic QC PDFs (`VlnPlot`, `TSSPlot`, and `nCount_ATAC` vs `TSS.enrichment` scatter).
+  - Automatically harmonizes barcode prefixes between RNA and ATAC (`RenameCells`).
+  - Subsets to high-quality intersected cells, integrates ATAC `ChromatinAssay` and non-redundant metadata into the RNA object.
+  - Computes joint dimensional reductions: ATAC LSI (dims 2:30), refreshes/verifies RNA PCA (dims 1:40), and computes Weighted Nearest Neighbor (`FindMultiModalNeighbors` + `wnn.umap`).
+  - Exports `<sample_id>_multiome_merged.rds`, `<sample_id>_joint_wnn_umaps.pdf`, and `<sample_id>_cell_retention_summary.csv`.
+* **Execution Modes:**
+  - **Single-Sample CLI / SLURM Array:** `Rscript process_and_merge_atac.R --sample_id GG001AC --rna_rds /path/to/rna.rds --peaks /path/to/peaks.narrowPeak --fragments /path/to/fragments.tsv.gz --output_dir /path/to/out`
+  - **Batch Mode via CSV:** `Rscript process_and_merge_atac.R --sample_sheet samples.csv`
+
+---
+
+### 4. Supporting Cluster Scripts & Documentation
+* **`samples_template.csv`**: Template sample sheet for multi-sample batch processing.
+* **`submit_multiome_array.sh`**: Production SLURM job array script for parallelizing sample processing on HPC nodes.
+* **`SKILLS_BREAKDOWN_AND_RECOMMENDATIONS.md`**: Technical synthesis of ATAC skills suite, standardizing 501 bp peaks, and QC calibrations.
+* **`TODO.md`**: Project roadmap tracking downstream modules (TF Motifs/chromVAR, Enhancer-Gene Linking, Pseudobulk DARs).
 * **`CHANGELOG.md`**: Chronological log of all repository modifications.
 * **`01_QC_and_setup.R`**: Standalone testing script (untracked in Git).
 
@@ -137,5 +156,6 @@ flowchart TD
 | `c4d16f0` | 2026-10-12 | `README.md` | Added comprehensive pipeline documentation, architecture diagrams, file registry, and structured push changelog. |
 | `59be756` | 2026-10-12 | `02_Peak_Calling_MACS2.Rmd`, `README.md` | Fixed `Fragments()` generic error by explicitly targeting `ATAC_gang[["ATAC"]]` and setting `DefaultAssay` to ATAC (preventing method dispatch failure against Seurat v5 Assay5). |
 | `e9e06f6` | 2026-10-13 | `ATAC_Ganglioglioma.Rmd`, `02_Peak_Calling_MACS2.Rmd`, `SKILLS_BREAKDOWN_AND_RECOMMENDATIONS.md`, `TODO.md`, `CHANGELOG.md`, `README.md` | Calibrated QC thresholds (`nucleosome_signal < 4`), added TSS enrichment distribution exploration, FRiP/blacklist ratios, GeneActivity matrix, 501 bp summit-centered peak standardization (Corces 2018), and project roadmap. |
+| *(Pending)* | 2026-10-21 | `process_and_merge_atac.R`, `samples_template.csv`, `submit_multiome_array.sh`, `.gitignore`, `README.md`, `CHANGELOG.md` | Created modular multi-sample `process_and_merge_atac.R` pipeline script, SLURM array runner, sample template, and barcode harmonization logic. |
 
 > **Agent Protocol:** Before every future `git push`, this README's **Git Push & Change Log** and **File Registry** must be updated with the newest modifications.

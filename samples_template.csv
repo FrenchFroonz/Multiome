@@ -1,0 +1,2 @@
+sample_id,rna_rds_path,peaks_path,fragments_path,metadata_path,output_dir
+GG001AC,/data-pure/workspace/fdervis/Ganglioglioma/RNA_processed/GG001AC_rna_processed.rds,/data-pure/workspace/fdervis/Ganglioglioma/Multiome/MACS2_peakCalling/ganglioglioma_peaks_GG001AC_peaks.narrowPeak,/data-pure/sequencing/ngs/NGS2026_10893/HG38/count/cellranger/GG001AC/atac_fragments.tsv.gz,/data-pure/sequencing/ngs/NGS2026_10893/HG38/count/cellranger/GG001AC/per_barcode_metrics.csv,/data-pure/workspace/fdervis/Ganglioglioma/Multiome/output/GG001AC
