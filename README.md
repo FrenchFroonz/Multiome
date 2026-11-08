@@ -164,6 +164,6 @@ flowchart TD
 | `d2ca4bd` | 2026-10-21 | `process_and_merge_atac.R`, `submit_multiome_batch.sh`, `README.md`, `CHANGELOG.md` | Streamlined `process_and_merge_atac.R` to Batch Mode only, structured `process_single_sample()` core logic, and added `gc()` memory cleanup between iterations. |
 | `f5f8cd1` | 2026-10-21 | `test_process_and_merge_atac.Rmd`, `README.md`, `CHANGELOG.md` | Added interactive single-sample test notebook `test_process_and_merge_atac.Rmd` reproducing batch pipeline logic step-by-step. |
 | `f86a4c2` | 2026-10-21 | `test_process_and_merge_atac.Rmd`, `process_and_merge_atac.R`, `samples_template.csv`, `README.md`, `CHANGELOG.md` | Integrated Azimuth cell-type annotations (`Azimuth_cellType`) into Seurat metadata, 4-panel diagnostic UMAPs, and sample sheets. |
-| `Pending` | 2026-11-08 | `test_process_and_merge_atac.Rmd`, `samples_template.csv`, `README.md`, `CHANGELOG.md` | Updated RNA `.rds` input directory and filenames (`filtered_<sample_id>_RNA.rds`) for `GG001AC`, `GG001IF`, `GG001AMY`, and `GG001TB`. |
+| `7e072af` | 2026-11-08 | `test_process_and_merge_atac.Rmd`, `samples_template.csv`, `README.md`, `CHANGELOG.md` | Updated RNA `.rds` input directory and filenames (`filtered_<sample_id>_RNA.rds`) for `GG001AC`, `GG001IF`, `GG001AMY`, and `GG001TB`. |
 
 > **Agent Protocol:** Before every future `git push`, this README's **Git Push & Change Log** and **File Registry** must be updated with the newest modifications.
