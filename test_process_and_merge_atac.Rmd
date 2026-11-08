@@ -59,7 +59,7 @@ rna_dir <- "/data-pure/workspace/fdervis/Ganglioglioma/RNA_QC/RNA_Pipeline/03_pr
 rna_rds_path <- file.path(rna_dir, paste0("filtered_", sample_id, "_RNA.rds"))
 
 # 2. Path to MACS2 .narrowPeak output (or standard 10x peak file)
-peaks_path <- paste0("/data-pure/workspace/fdervis/Ganglioglioma/Multiome/MACS2_peakCalling/ganglioglioma_peaks_", sample_id, "_peaks.narrowPeak")
+peaks_path <- paste0("/data-pure/workspace/fdervis/Ganglioglioma/Multiome/MACS2_peakCalling/",sample_id,"/ganglioglioma_peaks_", sample_id, "_peaks.narrowPeak")
 
 # 3. Path to 10x ATAC fragments file (.tsv.gz with .tbi index alongside)
 fragments_path <- paste0("/data-pure/sequencing/ngs/NGS2026_10893/HG38/count/cellranger/", sample_id, "/atac_fragments.tsv.gz")
@@ -432,7 +432,8 @@ for (col in atac_cols_to_add) {
   multiome_obj@meta.data[[col]] <- atac_sub@meta.data[colnames(multiome_obj), col]
 }
 
-cat("Unified Multiome object created with assays:", Assays(multiome_obj), "\n")
+#cat("Unified Multiome object created with assays:", Assays(multiome_obj), "\n")
+###FIX THIS
 ```
 
 ---
