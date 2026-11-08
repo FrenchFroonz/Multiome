@@ -4,7 +4,13 @@ All notable changes, architectural updates, and code modifications for this repo
 
 ---
 
-## [Current - 2026-10-21]
+## [Current - 2026-11-08]
+### Changed
+- **Updated Processed RNA `.rds` Paths in `test_process_and_merge_atac.Rmd` & `samples_template.csv`**: Pointed `rna_rds_path` to `/data-pure/workspace/fdervis/Ganglioglioma/RNA_QC/RNA_Pipeline/03_processed_data/filtered_<sample_id>_RNA.rds` and added all four samples (`GG001AC`, `GG001IF`, `GG001AMY`, `GG001TB`) to `samples_template.csv`.
+
+---
+
+## [2026-10-21]
 ### Added
 - **Azimuth Cell-Type Annotation Integration (`Azimuth_cellType`)**: Added dedicated ingestion of Azimuth alignment predictions across both `test_process_and_merge_atac.Rmd` (Chunk 10) and `process_and_merge_atac.R` (Step 3.6b). Features automatic file format handling (CSV, TSV, RDS), candidate column detection (`predicted.celltype.l2`, `cell_type`, etc.), prefix-aware barcode harmonization, and rendering of annotated cell types onto the joint WNN UMAP.
 - **`test_process_and_merge_atac.Rmd`**: Interactive, single-sample test notebook reproducing the entire ATAC QC, empty droplet avoidance, MACS2 peak cleaning, Signac QC, barcode harmonization, and multimodal WNN dimensionality reduction pipeline with separate chunks and explanatory comments.

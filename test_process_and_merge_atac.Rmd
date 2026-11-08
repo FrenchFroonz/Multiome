@@ -46,41 +46,48 @@ It is designed to let you step through each analytical stage interactively in RS
 Edit the file paths below to point to the data for the sample you want to test (e.g. `GG001AC`).
 
 ```{r define_inputs}
-# Unique Sample Identifier
+# Unique Sample Identifier (Available: "GG001AC", "GG001IF", "GG001AMY", "GG001TB")
 sample_id <- "GG001AC"
 
 # 1. Path to pre-processed RNA Seurat object (.rds)
-rna_rds_path <- "/data-pure/workspace/fdervis/Ganglioglioma/RNA_processed/GG001AC_rna_processed.rds"
+# Available files in /data-pure/workspace/fdervis/Ganglioglioma/RNA_QC/RNA_Pipeline/03_processed_data:
+#   - filtered_GG001AC_RNA.rds
+#   - filtered_GG001IF_RNA.rds
+#   - filtered_GG001AMY_RNA.rds
+#   - filtered_GG001TB_RNA.rds
+rna_dir <- "/data-pure/workspace/fdervis/Ganglioglioma/RNA_QC/RNA_Pipeline/03_processed_data"
+rna_rds_path <- file.path(rna_dir, paste0("filtered_", sample_id, "_RNA.rds"))
 
 # 2. Path to MACS2 .narrowPeak output (or standard 10x peak file)
-peaks_path <- "/data-pure/workspace/fdervis/Ganglioglioma/Multiome/MACS2_peakCalling/ganglioglioma_peaks_GG001AC_peaks.narrowPeak"
+peaks_path <- paste0("/data-pure/workspace/fdervis/Ganglioglioma/Multiome/MACS2_peakCalling/ganglioglioma_peaks_", sample_id, "_peaks.narrowPeak")
 
 # 3. Path to 10x ATAC fragments file (.tsv.gz with .tbi index alongside)
-fragments_path <- "/data-pure/sequencing/ngs/NGS2026_10893/HG38/count/cellranger/GG001AC/atac_fragments.tsv.gz"
+fragments_path <- paste0("/data-pure/sequencing/ngs/NGS2026_10893/HG38/count/cellranger/", sample_id, "/atac_fragments.tsv.gz")
 
 # 4. (Optional) Path to Cell Ranger ARC per-barcode metrics CSV
-metadata_path <- "/data-pure/sequencing/ngs/NGS2026_10893/HG38/count/cellranger/GG001AC/per_barcode_metrics.csv"
+metadata_path <- paste0("/data-pure/sequencing/ngs/NGS2026_10893/HG38/count/cellranger/", sample_id, "/per_barcode_metrics.csv")
 
 # 5. Path to Azimuth annotation output from alignment / secondary analysis
 # (e.g., azimuth_annotations.csv, predictions.tsv, azimuth_predictions.tsv, or .rds)
-azimuth_path <- "/data-pure/sequencing/ngs/NGS2026_10893/HG38/count/cellranger/GG001AC/azimuth_annotations.csv"
+azimuth_path <- paste0("/data-pure/sequencing/ngs/NGS2026_10893/HG38/count/cellranger/", sample_id, "/azimuth_annotations.csv")
 
 # 6. Output directory for diagnostic plots and final merged object
-output_dir <- "./outputs/test_GG001AC"
+output_dir <- paste0("./outputs/test_", sample_id)
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
 # Quality Control Thresholds
-min_counts_atac       <- 1000   # Minimum ATAC fragment counts
-max_counts_atac       <- NULL   # NULL = auto-calculate as mean + 2*SD (capped at 100k)
-max_nucleosome_signal <- 2.0    # Cutoff for nucleosome banding periodicity
-min_tss_enrichment    <- 2.0    # Cutoff for transcription start site enrichment
+min_counts_atac <- 1000 # Minimum ATAC fragment counts
+max_counts_atac <- NULL # NULL = auto-calculate as mean + 2*SD (capped at 100k)
+max_nucleosome_signal <- 2.0 # Cutoff for nucleosome banding periodicity
+min_tss_enrichment <- 2.0 # Cutoff for transcription start site enrichment
 
 # Dimensionality Reduction Dimensions
-dims_rna        <- 40     # RNA PCA dimensions (1:40)
-dims_atac_start <- 2      # Skip 1st ATAC LSI dimension (technical depth correlation)
-dims_atac_end   <- 30     # ATAC LSI dimensions (2:30)
+dims_rna <- 40 # RNA PCA dimensions (1:40)
+dims_atac_start <- 2 # Skip 1st ATAC LSI dimension (technical depth correlation)
+dims_atac_end <- 30 # ATAC LSI dimensions (2:30)
 
 cat("Sample ID:    ", sample_id, "\n")
+cat("RNA RDS Path: ", rna_rds_path, "\n")
 cat("Azimuth Path: ", azimuth_path, "\n")
 cat("Output Dir:   ", output_dir, "\n")
 ```
@@ -157,17 +164,19 @@ if (grepl("\\.narrowPeak(\\.gz)?$", peaks_path, ignore.case = TRUE)) {
     file = peaks_path,
     header = FALSE,
     stringsAsFactors = FALSE,
-    col.names = c("chr", "start", "end", "name", "score", "strand", 
-                  "fold_change", "neg_log10pvalue", "neg_log10qvalue", "relative_summit_pos")
+    col.names = c(
+      "chr", "start", "end", "name", "score", "strand",
+      "fold_change", "neg_log10pvalue", "neg_log10qvalue", "relative_summit_pos"
+    )
   )
-  
+
   # Optional statistical significance filter: FDR <= 0.05 (-log10(q) >= 1.3)
   if ("neg_log10qvalue" %in% colnames(peaks_df)) {
     n_raw_peaks <- nrow(peaks_df)
     peaks_df <- peaks_df[peaks_df$neg_log10qvalue >= 1.3, ]
     cat(sprintf("Retained %d / %d peaks with -log10(qvalue) >= 1.3\n", nrow(peaks_df), n_raw_peaks))
   }
-  
+
   # Convert to GRanges (0-based start)
   peaks <- makeGRangesFromDataFrame(
     df = peaks_df,
@@ -300,18 +309,23 @@ p_vln <- VlnPlot(
 print(p_vln)
 
 # 2. TSS Enrichment Profile (aggregates signal +/- 2000 bp around TSS)
-p_tss <- tryCatch({
-  TSSPlot(atac_obj, group.by = "high.tss") + 
-    ggtitle(paste0(sample_id, " - TSS Signal Profile (Cutoff = ", min_tss_enrichment, ")"))
-}, error = function(e) {
-  message("TSSPlot notice: ", e$message)
-  NULL
-})
+p_tss <- tryCatch(
+  {
+    TSSPlot(atac_obj, group.by = "high.tss") +
+      ggtitle(paste0(sample_id, " - TSS Signal Profile (Cutoff = ", min_tss_enrichment, ")"))
+  },
+  error = function(e) {
+    message("TSSPlot notice: ", e$message)
+    NULL
+  }
+)
 if (!is.null(p_tss)) print(p_tss)
 
 # 3. Scatter Plot: Sequencing Depth vs TSS Enrichment
-p_scatter <- ggplot(atac_obj@meta.data, aes(x = nCount_ATAC, y = TSS.enrichment, 
-                                            color = nucleosome_signal <= max_nucleosome_signal)) +
+p_scatter <- ggplot(atac_obj@meta.data, aes(
+  x = nCount_ATAC, y = TSS.enrichment,
+  color = nucleosome_signal <= max_nucleosome_signal
+)) +
   geom_point(alpha = 0.4, size = 0.8) +
   scale_x_log10() +
   geom_hline(yintercept = min_tss_enrichment, linetype = "dashed", color = "firebrick") +
@@ -358,14 +372,16 @@ cat("  TSS.enrichment min:    ", min_tss_enrichment, "\n")
 atac_filtered <- subset(
   x = atac_obj,
   subset = nCount_ATAC >= min_counts_atac &
-           nCount_ATAC <= max_counts_val &
-           nucleosome_signal <= max_nucleosome_signal &
-           TSS.enrichment >= min_tss_enrichment
+    nCount_ATAC <= max_counts_val &
+    nucleosome_signal <= max_nucleosome_signal &
+    TSS.enrichment >= min_tss_enrichment
 )
 
 n_atac_post_qc <- ncol(atac_filtered)
-cat(sprintf("ATAC cells passing QC: %d / %d (%.1f%%)\n", 
-            n_atac_post_qc, n_atac_quantified, (n_atac_post_qc / n_atac_quantified) * 100))
+cat(sprintf(
+  "ATAC cells passing QC: %d / %d (%.1f%%)\n",
+  n_atac_post_qc, n_atac_quantified, (n_atac_post_qc / n_atac_quantified) * 100
+))
 ```
 
 ---
@@ -376,7 +392,7 @@ We ensure the barcode naming conventions match 1:1 between RNA and ATAC, interse
 
 ```{r harmonize_and_merge}
 # Check if RNA barcodes have a sample_id prefix
-rna_has_prefix  <- any(startsWith(colnames(rna_obj), paste0(sample_id, "_")))
+rna_has_prefix <- any(startsWith(colnames(rna_obj), paste0(sample_id, "_")))
 atac_has_prefix <- any(startsWith(colnames(atac_filtered), paste0(sample_id, "_")))
 
 if (rna_has_prefix && !atac_has_prefix) {
@@ -403,7 +419,7 @@ cat(sprintf("  Retention vs ATAC:          %.2f%%\n", (n_final_multiome / n_atac
 cat("====================================================\n")
 
 # Subset both objects to the shared high-confidence cells
-rna_sub  <- subset(rna_obj, cells = common_cells)
+rna_sub <- subset(rna_obj, cells = common_cells)
 atac_sub <- subset(atac_filtered, cells = common_cells)
 
 # Initialize unified Multiome object from RNA, then attach ATAC ChromatinAssay
@@ -463,7 +479,7 @@ if (!is.null(azimuth_path) && !file.exists(azimuth_path)) {
 
 if (!is.null(azimuth_path) && file.exists(azimuth_path)) {
   cat("Reading Azimuth annotation file from:", azimuth_path, "\n")
-  
+
   # Load based on extension
   if (grepl("\\.rds$", azimuth_path, ignore.case = TRUE)) {
     az_raw <- readRDS(azimuth_path)
@@ -483,13 +499,13 @@ if (!is.null(azimuth_path) && file.exists(azimuth_path)) {
       check.names = FALSE
     )
   }
-  
+
   cat("Loaded Azimuth table with", nrow(az_df), "rows and", ncol(az_df), "columns.\n")
-  
+
   # 1. Identify barcode column
   barcode_candidates <- c("barcode", "Barcode", "cell", "Cell", "cell_barcode", "cb", "CB")
   matched_bc_col <- intersect(barcode_candidates, colnames(az_df))
-  
+
   if (length(matched_bc_col) > 0) {
     az_barcodes <- as.character(az_df[[matched_bc_col[1]]])
   } else if (!is.null(rownames(az_df)) && !all(rownames(az_df) == as.character(seq_len(nrow(az_df))))) {
@@ -497,7 +513,7 @@ if (!is.null(azimuth_path) && file.exists(azimuth_path)) {
   } else {
     az_barcodes <- as.character(az_df[, 1])
   }
-  
+
   # 2. Identify the cell type prediction column
   # We search for known Azimuth output column names in order of specificity
   type_candidates <- c(
@@ -516,7 +532,7 @@ if (!is.null(azimuth_path) && file.exists(azimuth_path)) {
     "azimuth_label"
   )
   matched_type_col <- intersect(type_candidates, colnames(az_df))
-  
+
   if (length(matched_type_col) > 0) {
     chosen_type_col <- matched_type_col[1]
   } else {
@@ -530,10 +546,10 @@ if (!is.null(azimuth_path) && file.exists(azimuth_path)) {
   cat("Selected Azimuth annotation column:", chosen_type_col, "\n")
   az_celltypes <- as.character(az_df[[chosen_type_col]])
   names(az_celltypes) <- az_barcodes
-  
+
   # 3. Barcode harmonization between Azimuth and multiome_obj
   obj_cells <- colnames(multiome_obj)
-  
+
   if (sum(obj_cells %in% names(az_celltypes)) > 0) {
     matched_annotations <- az_celltypes[obj_cells]
   } else if (sum(paste0(sample_id, "_", names(az_celltypes)) %in% obj_cells) > 0) {
@@ -545,19 +561,20 @@ if (!is.null(azimuth_path) && file.exists(azimuth_path)) {
     names(az_celltypes) <- stripped_az_names
     matched_annotations <- az_celltypes[obj_cells]
   }
-  
+
   # 4. Attach Azimuth_cellType metadata column
   multiome_obj$Azimuth_cellType <- matched_annotations
-  
+
   n_annotated <- sum(!is.na(multiome_obj$Azimuth_cellType) & multiome_obj$Azimuth_cellType != "")
   pct_annotated <- round((n_annotated / ncol(multiome_obj)) * 100, 1)
-  cat(sprintf("Successfully assigned Azimuth_cellType to %d / %d cells (%.1f%%)\n",
-              n_annotated, ncol(multiome_obj), pct_annotated))
-  
+  cat(sprintf(
+    "Successfully assigned Azimuth_cellType to %d / %d cells (%.1f%%)\n",
+    n_annotated, ncol(multiome_obj), pct_annotated
+  ))
+
   # Frequency table of annotated cell types
   cat("\nAzimuth Cell Type Breakdown:\n")
   print(table(multiome_obj$Azimuth_cellType, useNA = "ifany"))
-  
 } else {
   warning(sprintf(
     "Azimuth annotation file not found at: %s.\nSetting multiome_obj$Azimuth_cellType to 'Unannotated'.\nPlease verify path in Chunk 1.",
@@ -609,8 +626,10 @@ if (!"pca" %in% Reductions(multiome_obj)) {
 # 3. Multimodal WNN (Weighted Nearest Neighbors) Integration
 # -----------------------------------------------------------------------------
 rna_dims <- 1:dims_rna
-cat(sprintf("Running FindMultiModalNeighbors (RNA dims 1:%d, ATAC dims %d:%d)...\n", 
-            dims_rna, dims_atac_start, dims_atac_end))
+cat(sprintf(
+  "Running FindMultiModalNeighbors (RNA dims 1:%d, ATAC dims %d:%d)...\n",
+  dims_rna, dims_atac_start, dims_atac_end
+))
 
 multiome_obj <- FindMultiModalNeighbors(
   object = multiome_obj,
@@ -630,18 +649,18 @@ multiome_obj <- RunUMAP(
 # -----------------------------------------------------------------------------
 # 4. Multi-Panel Diagnostic UMAP Plot with Azimuth Cell Types
 # -----------------------------------------------------------------------------
-p_rna_umap  <- DimPlot(multiome_obj, reduction = if ("umap" %in% Reductions(multiome_obj)) "umap" else "umap.atac", label = FALSE) + 
+p_rna_umap <- DimPlot(multiome_obj, reduction = if ("umap" %in% Reductions(multiome_obj)) "umap" else "umap.atac", label = FALSE) +
   ggtitle(paste0(sample_id, " - RNA UMAP"))
-p_atac_umap <- DimPlot(multiome_obj, reduction = "umap.atac", label = FALSE) + 
+p_atac_umap <- DimPlot(multiome_obj, reduction = "umap.atac", label = FALSE) +
   ggtitle(paste0(sample_id, " - ATAC LSI UMAP"))
-p_wnn_umap  <- DimPlot(multiome_obj, reduction = "wnn.umap", label = FALSE) + 
+p_wnn_umap <- DimPlot(multiome_obj, reduction = "wnn.umap", label = FALSE) +
   ggtitle(paste0(sample_id, " - Joint WNN UMAP"))
 
 # Plot Azimuth annotations on WNN UMAP if available
-p_azimuth_umap <- if ("Azimuth_cellType" %in% colnames(multiome_obj@meta.data) && 
-                      any(!is.na(multiome_obj$Azimuth_cellType) & multiome_obj$Azimuth_cellType != "Unannotated")) {
-  DimPlot(multiome_obj, reduction = "wnn.umap", group.by = "Azimuth_cellType", label = TRUE, repel = TRUE) + 
-    ggtitle(paste0(sample_id, " - Azimuth Cell Types")) + 
+p_azimuth_umap <- if ("Azimuth_cellType" %in% colnames(multiome_obj@meta.data) &&
+  any(!is.na(multiome_obj$Azimuth_cellType) & multiome_obj$Azimuth_cellType != "Unannotated")) {
+  DimPlot(multiome_obj, reduction = "wnn.umap", group.by = "Azimuth_cellType", label = TRUE, repel = TRUE) +
+    ggtitle(paste0(sample_id, " - Azimuth Cell Types")) +
     theme(legend.position = "right")
 } else {
   NULL
