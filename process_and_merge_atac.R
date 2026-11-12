@@ -229,45 +229,7 @@ process_single_sample <- function(sample_id, rna_rds_path, peaks_path, fragments
   atac_obj$high.tss <- ifelse(atac_obj$TSS.enrichment >= min_tss_enrichment, "High_TSS", "Low_TSS")
   
   # ----------------------------------------------------------------------------
-  # Step 3.4: Export Diagnostic QC Plots to PDF
-  # ----------------------------------------------------------------------------
-  qc_pdf_path <- file.path(output_dir, paste0(sample_id, "_atac_qc_diagnostics.pdf"))
-  message(sprintf("     Exporting diagnostic QC plots to: %s", qc_pdf_path))
-  
-  pdf(qc_pdf_path, width = 12, height = 8)
-  
-  p_vln <- VlnPlot(
-    object = atac_obj,
-    features = c("nCount_ATAC", "nFeature_ATAC", "TSS.enrichment", "nucleosome_signal"),
-    ncol = 4,
-    pt.size = 0.1,
-    log = TRUE
-  ) + plot_annotation(title = paste0(sample_id, " - Pre-Filter ATAC QC Distributions"))
-  print(p_vln)
-  
-  # TSS Enrichment signal profile across TSS +/- 2000 bp
-  tryCatch({
-    p_tss <- TSSPlot(atac_obj, group.by = "high.tss") + 
-      ggtitle(paste0(sample_id, " - TSS Enrichment Signal Profile (cutoff = ", min_tss_enrichment, ")"))
-    print(p_tss)
-  }, error = function(e) {
-    message(sprintf("     Notice: Could not generate TSSPlot: %s", e$message))
-  })
-  
-  # Correlation scatter: nCount_ATAC vs TSS.enrichment
-  p_scatter <- ggplot(atac_obj@meta.data, aes(x = nCount_ATAC, y = TSS.enrichment, color = nucleosome_signal <= max_nucleosome_signal)) +
-    geom_point(alpha = 0.4, size = 0.8) +
-    scale_x_log10() +
-    geom_hline(yintercept = min_tss_enrichment, linetype = "dashed", color = "firebrick") +
-    scale_color_manual(values = c("TRUE" = "#1a73e8", "FALSE" = "#d93025"), name = "Pass Nucleosome") +
-    theme_minimal() +
-    labs(title = paste0(sample_id, " - TSS vs ATAC Depth"), x = "nCount_ATAC (log10)", y = "TSS Enrichment Score")
-  print(p_scatter)
-  
-  dev.off()
-  
-  # ----------------------------------------------------------------------------
-  # Step 3.5: Filter ATAC Cells using Configurable Thresholds
+  # Step 3.4: Compute Thresholds & Generate Pre-Filter ATAC QC Plots
   # ----------------------------------------------------------------------------
   min_c <- min_counts_atac
   max_c <- max_counts_atac
@@ -277,7 +239,41 @@ process_single_sample <- function(sample_id, rna_rds_path, peaks_path, fragments
     max_c <- min(max(max_c, 50000), 100000)
     message(sprintf("     Auto-calculated upper depth cutoff (mean + 2*SD): %d", max_c))
   }
-  
+
+  p_vln_pre <- VlnPlot(
+    object = atac_obj,
+    features = c("nCount_ATAC", "nFeature_ATAC", "TSS.enrichment", "nucleosome_signal"),
+    ncol = 4,
+    pt.size = 0.1,
+    log = TRUE
+  ) + plot_annotation(title = paste0(sample_id, " - Pre-Filter ATAC QC Distributions (on RNA-Filtered Nuclei, n = ", ncol(atac_obj), ")"))
+
+  p_tss_pre <- tryCatch({
+    TSSPlot(atac_obj, group.by = "high.tss") + 
+      ggtitle(paste0(sample_id, " - Pre-Filter TSS Enrichment Signal Profile (cutoff = ", min_tss_enrichment, ")"))
+  }, error = function(e) {
+    message(sprintf("     Notice: Could not generate pre-filter TSSPlot: %s", e$message))
+    NULL
+  })
+
+  # Correlation scatter: nCount_ATAC vs TSS.enrichment (Pre-Filter)
+  p_scatter_pre <- ggplot(atac_obj@meta.data, aes(x = nCount_ATAC, y = TSS.enrichment, color = nucleosome_signal <= max_nucleosome_signal)) +
+    geom_point(alpha = 0.4, size = 0.8) +
+    scale_x_log10() +
+    geom_hline(yintercept = min_tss_enrichment, linetype = "dashed", color = "firebrick") +
+    geom_vline(xintercept = c(min_c, max_c), linetype = "dashed", color = "darkgreen") +
+    scale_color_manual(values = c("TRUE" = "#1a73e8", "FALSE" = "#d93025"), name = "Pass Nucleosome") +
+    theme_minimal() +
+    labs(
+      title = paste0(sample_id, " - Pre-Filter TSS vs ATAC Depth (n = ", ncol(atac_obj), ")"),
+      subtitle = sprintf("Cutoffs: %d <= nCount_ATAC <= %d | TSS >= %.1f | Nucleosome <= %.1f", min_c, max_c, min_tss_enrichment, max_nucleosome_signal),
+      x = "nCount_ATAC (log10)",
+      y = "TSS Enrichment Score"
+    )
+
+  # ----------------------------------------------------------------------------
+  # Step 3.5: Filter ATAC Cells using Configurable Thresholds
+  # ----------------------------------------------------------------------------
   message(sprintf("     Applying ATAC QC Filters: %d <= nCount_ATAC <= %d, nucleosome_signal <= %.1f, TSS.enrichment >= %.1f",
                   min_c, max_c, max_nucleosome_signal, min_tss_enrichment))
   
@@ -291,6 +287,28 @@ process_single_sample <- function(sample_id, rna_rds_path, peaks_path, fragments
   n_atac_post_qc <- ncol(atac_filtered)
   message(sprintf("     ATAC cells passing QC: %d / %d (%.1f%%)", 
                   n_atac_post_qc, n_atac_quantified, (n_atac_post_qc / n_atac_quantified) * 100))
+
+  # Post-Filter ATAC QC Plots
+  p_vln_post_atac <- VlnPlot(
+    object = atac_filtered,
+    features = c("nCount_ATAC", "nFeature_ATAC", "TSS.enrichment", "nucleosome_signal"),
+    ncol = 4,
+    pt.size = 0.1,
+    log = TRUE
+  ) + plot_annotation(title = paste0(sample_id, " - Post-Filter ATAC QC Distributions (n = ", n_atac_post_qc, ")"))
+
+  p_scatter_post <- ggplot(atac_filtered@meta.data, aes(x = nCount_ATAC, y = TSS.enrichment, color = nucleosome_signal <= max_nucleosome_signal)) +
+    geom_point(alpha = 0.4, size = 0.8) +
+    scale_x_log10() +
+    geom_hline(yintercept = min_tss_enrichment, linetype = "dashed", color = "firebrick") +
+    geom_vline(xintercept = c(min_c, max_c), linetype = "dashed", color = "darkgreen") +
+    scale_color_manual(values = c("TRUE" = "#1a73e8", "FALSE" = "#d93025"), name = "Pass Nucleosome") +
+    theme_minimal() +
+    labs(
+      title = paste0(sample_id, " - Post-Filter TSS vs ATAC Depth (n = ", n_atac_post_qc, ")"),
+      x = "nCount_ATAC (log10)",
+      y = "TSS Enrichment Score"
+    )
   
   # ----------------------------------------------------------------------------
   # Step 3.6: Barcode Harmonization & Recombination with RNA Object
@@ -409,6 +427,61 @@ process_single_sample <- function(sample_id, rna_rds_path, peaks_path, fragments
   } else {
     multiome_obj$Azimuth_cellType <- "Unannotated"
   }
+
+  # ----------------------------------------------------------------------------
+  # Step 3.6c: Export Pre-Filter & Post-Filter (ATAC + Combined RNA/ATAC) QC PDF
+  # ----------------------------------------------------------------------------
+  qc_pdf_path <- file.path(output_dir, paste0(sample_id, "_atac_qc_diagnostics.pdf"))
+  message(sprintf("     Exporting Pre-QC and Post-QC diagnostic plots to: %s", qc_pdf_path))
+
+  # Detect optional mitochondrial percentage column in RNA metadata
+  mt_candidates <- c("percent.mt", "percent_mt", "mitoRatio", "percent.mito", "pct_counts_mt")
+  mt_col <- intersect(mt_candidates, colnames(multiome_obj@meta.data))
+  rna_qc_features <- c("nCount_RNA", "nFeature_RNA", if (length(mt_col) > 0) mt_col[1] else NULL)
+  rna_qc_features <- intersect(rna_qc_features, colnames(multiome_obj@meta.data))
+  atac_qc_features <- intersect(c("nCount_ATAC", "nFeature_ATAC", "TSS.enrichment", "nucleosome_signal"),
+                                colnames(multiome_obj@meta.data))
+  combined_qc_features <- c(rna_qc_features, atac_qc_features)
+
+  p_vln_post_multiome <- VlnPlot(
+    object = multiome_obj,
+    features = combined_qc_features,
+    ncol = min(length(combined_qc_features), 4),
+    pt.size = 0.1,
+    log = TRUE
+  ) + plot_annotation(
+    title = paste0(sample_id, " - Post-QC Final Merged Multiome Distributions (RNA + ATAC, n = ", ncol(multiome_obj), ")")
+  )
+
+  # Optional: Post-QC Violin Plot grouped by Azimuth_cellType
+  p_vln_by_celltype <- NULL
+  if ("Azimuth_cellType" %in% colnames(multiome_obj@meta.data) &&
+      any(!is.na(multiome_obj$Azimuth_cellType) & multiome_obj$Azimuth_cellType != "Unannotated")) {
+    p_vln_by_celltype <- VlnPlot(
+      object = multiome_obj,
+      features = intersect(c("nCount_RNA", "nFeature_RNA", "nCount_ATAC", "TSS.enrichment"), colnames(multiome_obj@meta.data)),
+      group.by = "Azimuth_cellType",
+      ncol = 2,
+      pt.size = 0,
+      log = TRUE
+    ) + plot_annotation(
+      title = paste0(sample_id, " - Post-QC Multiome Metrics by Azimuth Cell Type (n = ", ncol(multiome_obj), ")")
+    )
+  }
+
+  pdf(qc_pdf_path, width = 14, height = 8)
+  # Page 1-3: Pre-Filter ATAC QC
+  print(p_vln_pre)
+  if (!is.null(p_tss_pre)) print(p_tss_pre)
+  print(p_scatter_pre)
+  # Page 4-5: Post-Filter ATAC QC
+  print(p_vln_post_atac)
+  print(p_scatter_post)
+  # Page 6: Post-QC Combined RNA + ATAC Multiome Metrics
+  print(p_vln_post_multiome)
+  # Page 7 (if annotated): Post-QC Metrics by Azimuth Cell Type
+  if (!is.null(p_vln_by_celltype)) print(p_vln_by_celltype)
+  dev.off()
   
   # ----------------------------------------------------------------------------
   # Step 3.7: Joint Dimensionality Reduction (RNA + ATAC + WNN)

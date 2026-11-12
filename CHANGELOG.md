@@ -4,7 +4,17 @@ All notable changes, architectural updates, and code modifications for this repo
 
 ---
 
-## [Current - 2026-11-08]
+## [Current - 2026-11-12]
+### Added
+- **Post-QC ATAC & Combined Multiome Diagnostic Plots**: Expanded `<sample_id>_atac_qc_diagnostics.pdf` in [`process_and_merge_atac.R`](file:///Users/franz/Documents/Code/Ganglioglioma/Multiome_workspace/process_and_merge_atac.R) and [`test_process_and_merge_atac.Rmd`](file:///Users/franz/Documents/Code/Ganglioglioma/Multiome_workspace/test_process_and_merge_atac.Rmd) to include both Pre-Filter ATAC QC plots (with explicit threshold lines) and Post-Filter plots:
+  - Post-filter ATAC violin plots (`nCount_ATAC`, `nFeature_ATAC`, `TSS.enrichment`, `nucleosome_signal`) and depth vs. TSS scatter plot on `atac_filtered`.
+  - Final merged Multiome post-QC violin plots combining RNA (`nCount_RNA`, `nFeature_RNA`, mitochondrial %) and ATAC metrics on `multiome_obj`.
+  - Post-QC multimodal metrics stratified by `Azimuth_cellType`.
+- **`Reference_Pipeline_Comparison.md`**: Comprehensive technical walkthrough and comparison between the Kriegstein lab human cortical development 10x Multiome pipeline and our Ganglioglioma Multiome workflow.
+
+---
+
+## [2026-11-08]
 ### Changed
 - **Updated Processed RNA `.rds` Paths in `test_process_and_merge_atac.Rmd` & `samples_template.csv`**: Pointed `rna_rds_path` to `/data-pure/workspace/fdervis/Ganglioglioma/RNA_QC/RNA_Pipeline/03_processed_data/filtered_<sample_id>_RNA.rds` and added all four samples (`GG001AC`, `GG001IF`, `GG001AMY`, `GG001TB`) to `samples_template.csv`.
 

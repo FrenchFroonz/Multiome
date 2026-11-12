@@ -292,70 +292,12 @@ summary(atac_obj@meta.data[, c("nCount_ATAC", "nFeature_ATAC", "TSS.enrichment",
 
 ---
 
-## 7. Diagnostic QC Visualizations
+## 7. Pre-Filter ATAC Diagnostic QC Visualizations
 
-We plot the pre-filtering QC distributions and export the figures to PDF.
+Because `atac_obj` was built using `cells = raw_rna_barcodes`, these cells have **already passed your upstream RNA QC pipeline** (`filtered_<sample_id>_RNA.rds`), but have **not yet been filtered by ATAC-specific QC metrics**. Here we inspect the pre-filter ATAC distributions and threshold cutoffs.
 
 ```{r qc_plots, fig.height=8}
-# 1. Violin Plots of QC metrics
-p_vln <- VlnPlot(
-  object = atac_obj,
-  features = c("nCount_ATAC", "nFeature_ATAC", "TSS.enrichment", "nucleosome_signal"),
-  ncol = 4,
-  pt.size = 0.1,
-  log = TRUE
-) + plot_annotation(title = paste0(sample_id, " - Pre-Filter ATAC QC Distributions"))
-
-print(p_vln)
-
-# 2. TSS Enrichment Profile (aggregates signal +/- 2000 bp around TSS)
-p_tss <- tryCatch(
-  {
-    TSSPlot(atac_obj, group.by = "high.tss") +
-      ggtitle(paste0(sample_id, " - TSS Signal Profile (Cutoff = ", min_tss_enrichment, ")"))
-  },
-  error = function(e) {
-    message("TSSPlot notice: ", e$message)
-    NULL
-  }
-)
-if (!is.null(p_tss)) print(p_tss)
-
-# 3. Scatter Plot: Sequencing Depth vs TSS Enrichment
-p_scatter <- ggplot(atac_obj@meta.data, aes(
-  x = nCount_ATAC, y = TSS.enrichment,
-  color = nucleosome_signal <= max_nucleosome_signal
-)) +
-  geom_point(alpha = 0.4, size = 0.8) +
-  scale_x_log10() +
-  geom_hline(yintercept = min_tss_enrichment, linetype = "dashed", color = "firebrick") +
-  scale_color_manual(values = c("TRUE" = "#1a73e8", "FALSE" = "#d93025"), name = "Pass Nucleosome") +
-  theme_minimal() +
-  labs(
-    title = paste0(sample_id, " - TSS Enrichment vs ATAC Fragment Depth"),
-    x = "nCount_ATAC (log10)",
-    y = "TSS Enrichment Score"
-  )
-print(p_scatter)
-
-# Save all QC plots to PDF in output directory
-qc_pdf_path <- file.path(output_dir, paste0(sample_id, "_atac_qc_diagnostics.pdf"))
-pdf(qc_pdf_path, width = 12, height = 8)
-print(p_vln)
-if (!is.null(p_tss)) print(p_tss)
-print(p_scatter)
-dev.off()
-cat("Diagnostic QC plots saved to:", qc_pdf_path, "\n")
-```
-
----
-
-## 8. Filter ATAC Cells by QC Thresholds
-
-We apply the configured thresholds to filter out low-quality barcodes, broken nuclei, or excessive PCR duplicates.
-
-```{r filter_atac}
-# Upper depth threshold: mean + 2*SD (or manual)
+# Determine upper depth threshold: mean + 2*SD (capped at [50k, 100k]) or manual
 if (is.null(max_counts_atac)) {
   max_counts_val <- round(mean(atac_obj$nCount_ATAC) + 2 * sd(atac_obj$nCount_ATAC))
   max_counts_val <- min(max(max_counts_val, 50000), 100000)
@@ -363,6 +305,60 @@ if (is.null(max_counts_atac)) {
   max_counts_val <- max_counts_atac
 }
 
+# 1. Pre-Filter Violin Plots of ATAC QC metrics
+p_vln_pre <- VlnPlot(
+  object = atac_obj,
+  features = c("nCount_ATAC", "nFeature_ATAC", "TSS.enrichment", "nucleosome_signal"),
+  ncol = 4,
+  pt.size = 0.1,
+  log = TRUE
+) + plot_annotation(
+  title = paste0(sample_id, " - Pre-Filter ATAC QC Distributions (on RNA-Filtered Nuclei, n = ", ncol(atac_obj), ")")
+)
+
+print(p_vln_pre)
+
+# 2. Pre-Filter TSS Enrichment Profile (aggregates signal +/- 2000 bp around TSS)
+p_tss_pre <- tryCatch(
+  {
+    TSSPlot(atac_obj, group.by = "high.tss") +
+      ggtitle(paste0(sample_id, " - Pre-Filter TSS Signal Profile (Cutoff = ", min_tss_enrichment, ")"))
+  },
+  error = function(e) {
+    message("TSSPlot notice: ", e$message)
+    NULL
+  }
+)
+if (!is.null(p_tss_pre)) print(p_tss_pre)
+
+# 3. Pre-Filter Scatter Plot: Sequencing Depth vs TSS Enrichment with Cutoff Gates
+p_scatter_pre <- ggplot(atac_obj@meta.data, aes(
+  x = nCount_ATAC, y = TSS.enrichment,
+  color = nucleosome_signal <= max_nucleosome_signal
+)) +
+  geom_point(alpha = 0.4, size = 0.8) +
+  scale_x_log10() +
+  geom_hline(yintercept = min_tss_enrichment, linetype = "dashed", color = "firebrick") +
+  geom_vline(xintercept = c(min_counts_atac, max_counts_val), linetype = "dashed", color = "darkgreen") +
+  scale_color_manual(values = c("TRUE" = "#1a73e8", "FALSE" = "#d93025"), name = "Pass Nucleosome") +
+  theme_minimal() +
+  labs(
+    title = paste0(sample_id, " - Pre-Filter TSS Enrichment vs ATAC Fragment Depth (n = ", ncol(atac_obj), ")"),
+    subtitle = sprintf("Cutoffs: %d <= nCount_ATAC <= %d | TSS >= %.1f | Nucleosome <= %.1f",
+                       min_counts_atac, max_counts_val, min_tss_enrichment, max_nucleosome_signal),
+    x = "nCount_ATAC (log10)",
+    y = "TSS Enrichment Score"
+  )
+print(p_scatter_pre)
+```
+
+---
+
+## 8. Filter ATAC Cells & Plot Post-Filter ATAC Distributions
+
+We apply the configured thresholds to filter out low-quality ATAC barcodes and immediately visualize the **post-filter ATAC QC distributions**.
+
+```{r filter_atac, fig.height=8}
 cat("Applied Filtering Cutoffs:\n")
 cat("  nCount_ATAC min:       ", min_counts_atac, "\n")
 cat("  nCount_ATAC max:       ", max_counts_val, "\n")
@@ -382,6 +378,36 @@ cat(sprintf(
   "ATAC cells passing QC: %d / %d (%.1f%%)\n",
   n_atac_post_qc, n_atac_quantified, (n_atac_post_qc / n_atac_quantified) * 100
 ))
+
+# 1. Post-Filter ATAC Violin Plots
+p_vln_post_atac <- VlnPlot(
+  object = atac_filtered,
+  features = c("nCount_ATAC", "nFeature_ATAC", "TSS.enrichment", "nucleosome_signal"),
+  ncol = 4,
+  pt.size = 0.1,
+  log = TRUE
+) + plot_annotation(
+  title = paste0(sample_id, " - Post-Filter ATAC QC Distributions (n = ", n_atac_post_qc, ")")
+)
+print(p_vln_post_atac)
+
+# 2. Post-Filter Scatter Plot: Sequencing Depth vs TSS Enrichment
+p_scatter_post <- ggplot(atac_filtered@meta.data, aes(
+  x = nCount_ATAC, y = TSS.enrichment,
+  color = nucleosome_signal <= max_nucleosome_signal
+)) +
+  geom_point(alpha = 0.4, size = 0.8) +
+  scale_x_log10() +
+  geom_hline(yintercept = min_tss_enrichment, linetype = "dashed", color = "firebrick") +
+  geom_vline(xintercept = c(min_counts_atac, max_counts_val), linetype = "dashed", color = "darkgreen") +
+  scale_color_manual(values = c("TRUE" = "#1a73e8", "FALSE" = "#d93025"), name = "Pass Nucleosome") +
+  theme_minimal() +
+  labs(
+    title = paste0(sample_id, " - Post-Filter TSS Enrichment vs ATAC Fragment Depth (n = ", n_atac_post_qc, ")"),
+    x = "nCount_ATAC (log10)",
+    y = "TSS Enrichment Score"
+  )
+print(p_scatter_post)
 ```
 
 ---
@@ -432,8 +458,7 @@ for (col in atac_cols_to_add) {
   multiome_obj@meta.data[[col]] <- atac_sub@meta.data[colnames(multiome_obj), col]
 }
 
-#cat("Unified Multiome object created with assays:", Assays(multiome_obj), "\n")
-###FIX THIS
+cat("Unified Multiome object created with assays:", paste(names(multiome_obj@assays), collapse = ", "), "\n")
 ```
 
 ---
@@ -583,6 +608,75 @@ if (!is.null(azimuth_path) && file.exists(azimuth_path)) {
   ))
   multiome_obj$Azimuth_cellType <- "Unannotated"
 }
+```
+
+---
+
+## 10b. Post-QC Unified Multiome Distributions (RNA + ATAC) & Diagnostic PDF Export
+
+Now that `multiome_obj` contains the final high-confidence cells passing **both** your upstream RNA pipeline QC and our ATAC Signac QC, we plot the combined **post-QC RNA + ATAC distributions** (overall and stratified by `Azimuth_cellType`) and export both the **Pre-Filter** and **Post-Filter** diagnostic plots into `<sample_id>_atac_qc_diagnostics.pdf`.
+
+```{r post_qc_multiome_plots, fig.width=14, fig.height=8}
+# Detect optional mitochondrial percentage column from upstream RNA pipeline
+mt_candidates <- c("percent.mt", "percent_mt", "mitoRatio", "percent.mito", "pct_counts_mt")
+mt_col <- intersect(mt_candidates, colnames(multiome_obj@meta.data))
+
+rna_qc_features <- intersect(
+  c("nCount_RNA", "nFeature_RNA", if (length(mt_col) > 0) mt_col[1] else NULL),
+  colnames(multiome_obj@meta.data)
+)
+atac_qc_features <- intersect(
+  c("nCount_ATAC", "nFeature_ATAC", "TSS.enrichment", "nucleosome_signal"),
+  colnames(multiome_obj@meta.data)
+)
+combined_qc_features <- c(rna_qc_features, atac_qc_features)
+
+# 1. Post-QC Combined RNA + ATAC Violin Plots on Final Merged Multiome Cells
+p_vln_post_multiome <- VlnPlot(
+  object = multiome_obj,
+  features = combined_qc_features,
+  ncol = min(length(combined_qc_features), 4),
+  pt.size = 0.1,
+  log = TRUE
+) + plot_annotation(
+  title = paste0(sample_id, " - Post-QC Final Merged Multiome Distributions (RNA + ATAC, n = ", ncol(multiome_obj), ")")
+)
+print(p_vln_post_multiome)
+
+# 2. Post-QC Metrics Grouped by Azimuth Cell Type (if annotated)
+p_vln_by_celltype <- NULL
+if ("Azimuth_cellType" %in% colnames(multiome_obj@meta.data) &&
+    any(!is.na(multiome_obj$Azimuth_cellType) & multiome_obj$Azimuth_cellType != "Unannotated")) {
+  p_vln_by_celltype <- VlnPlot(
+    object = multiome_obj,
+    features = intersect(c("nCount_RNA", "nFeature_RNA", "nCount_ATAC", "TSS.enrichment"), colnames(multiome_obj@meta.data)),
+    group.by = "Azimuth_cellType",
+    ncol = 2,
+    pt.size = 0,
+    log = TRUE
+  ) + plot_annotation(
+    title = paste0(sample_id, " - Post-QC Multiome Metrics by Azimuth Cell Type (n = ", ncol(multiome_obj), ")")
+  )
+  print(p_vln_by_celltype)
+}
+
+# 3. Export complete Pre-Filter & Post-Filter QC Diagnostic Report to PDF
+qc_pdf_path <- file.path(output_dir, paste0(sample_id, "_atac_qc_diagnostics.pdf"))
+pdf(qc_pdf_path, width = 14, height = 8)
+# Pages 1-3: Pre-Filter ATAC QC
+print(p_vln_pre)
+if (!is.null(p_tss_pre)) print(p_tss_pre)
+print(p_scatter_pre)
+# Pages 4-5: Post-Filter ATAC QC
+print(p_vln_post_atac)
+print(p_scatter_post)
+# Page 6: Post-QC Combined RNA + ATAC Multiome Distributions
+print(p_vln_post_multiome)
+# Page 7: Post-QC Multiome Metrics by Azimuth Cell Type
+if (!is.null(p_vln_by_celltype)) print(p_vln_by_celltype)
+dev.off()
+
+cat("Complete Pre-QC & Post-QC diagnostic PDF saved to:", qc_pdf_path, "\n")
 ```
 
 ---
