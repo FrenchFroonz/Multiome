@@ -424,6 +424,8 @@ process_single_sample <- function(sample_id, rna_rds_path, peaks_path, fragments
     n_az <- sum(!is.na(multiome_obj$Azimuth_cellType) & multiome_obj$Azimuth_cellType != "")
     message(sprintf("     Assigned Azimuth_cellType to %d / %d cells (%.1f%%)", 
                     n_az, ncol(multiome_obj), (n_az / ncol(multiome_obj)) * 100))
+  } else if ("Azimuth_cellType" %in% colnames(multiome_obj@meta.data)) {
+    message("     Retaining existing Azimuth_cellType metadata column from pre-processed RNA object.")
   } else {
     multiome_obj$Azimuth_cellType <- "Unannotated"
   }
@@ -505,15 +507,26 @@ process_single_sample <- function(sample_id, rna_rds_path, peaks_path, fragments
     verbose = FALSE
   )
   
-  # 2. Verify / Refresh RNA PCA on the common cells
+  # 2. Verify / Refresh RNA PCA and RNA UMAP on the common cells
   DefaultAssay(multiome_obj) <- "RNA"
+  rna_dims <- 1:dims_rna
   if (!"pca" %in% Reductions(multiome_obj)) {
     message("     RNA PCA not detected; running PCA on normalized RNA assay...")
     multiome_obj <- RunPCA(multiome_obj, verbose = FALSE)
   }
+  if (!"umap" %in% Reductions(multiome_obj)) {
+    message("     RNA UMAP not detected; running UMAP on RNA PCA...")
+    multiome_obj <- RunUMAP(
+      multiome_obj,
+      reduction = "pca",
+      dims = rna_dims,
+      reduction.name = "umap",
+      reduction.key = "rnaUMAP_",
+      verbose = FALSE
+    )
+  }
   
   # 3. Weighted Nearest Neighbor (WNN) Multimodal Integration
-  rna_dims <- 1:dims_rna
   message(sprintf("     Computing WNN neighbors (RNA dims 1:%d, ATAC dims %d:%d)...", 
                   dims_rna, dims_atac_start, dims_atac_end))
   
@@ -534,16 +547,37 @@ process_single_sample <- function(sample_id, rna_rds_path, peaks_path, fragments
   
   # Multi-panel diagnostic UMAP plot
   umap_pdf_path <- file.path(output_dir, paste0(sample_id, "_joint_wnn_umaps.pdf"))
-  pdf(umap_pdf_path, width = 14, height = 10)
-  p1 <- DimPlot(multiome_obj, reduction = if ("umap" %in% Reductions(multiome_obj)) "umap" else "umap.atac", 
-                label = FALSE) + ggtitle(paste0(sample_id, " - RNA UMAP"))
+  pdf(umap_pdf_path, width = 16, height = 10)
+  
+  # Post-processed RNA UMAP plots (Clusters, ScType, and Azimuth_cellType)
+  p_rna_clusters <- DimPlot(multiome_obj, reduction = "umap", label = TRUE, repel = TRUE) + 
+    ggtitle(paste0(sample_id, " - Post-Processed RNA UMAP (Clusters)"))
+  
+  sctype_col <- intersect(c("ScType", "sctype", "SCType", "scType"), colnames(multiome_obj@meta.data))
+  p_rna_sctype <- if (length(sctype_col) > 0) {
+    DimPlot(multiome_obj, reduction = "umap", group.by = sctype_col[1], label = TRUE, repel = TRUE) +
+      ggtitle(paste0(sample_id, " - Post-Processed RNA UMAP (ScType)"))
+  } else NULL
+  
+  p_rna_azimuth <- if ("Azimuth_cellType" %in% colnames(multiome_obj@meta.data) && 
+                       any(!is.na(multiome_obj$Azimuth_cellType) & multiome_obj$Azimuth_cellType != "Unannotated")) {
+    DimPlot(multiome_obj, reduction = "umap", group.by = "Azimuth_cellType", label = TRUE, repel = TRUE) +
+      ggtitle(paste0(sample_id, " - Post-Processed RNA UMAP (Azimuth_cellType)"))
+  } else NULL
+  
+  # Page 1: Post-Processed RNA UMAP panels (Clusters + ScType + Azimuth_cellType)
+  rna_umap_panels <- Filter(Negate(is.null), list(p_rna_clusters, p_rna_sctype, p_rna_azimuth))
+  print(wrap_plots(rna_umap_panels, ncol = length(rna_umap_panels)) & theme(plot.title = element_text(hjust = 0.5)))
+  
+  # Page 2: Multimodal Overview (RNA UMAP, ATAC LSI UMAP, Joint WNN UMAP)
+  p1 <- DimPlot(multiome_obj, reduction = "umap", label = FALSE) + ggtitle(paste0(sample_id, " - RNA UMAP"))
   p2 <- DimPlot(multiome_obj, reduction = "umap.atac", label = FALSE) + ggtitle(paste0(sample_id, " - ATAC LSI UMAP"))
   p3 <- DimPlot(multiome_obj, reduction = "wnn.umap", label = FALSE) + ggtitle(paste0(sample_id, " - Joint WNN UMAP"))
   
   p4 <- if ("Azimuth_cellType" %in% colnames(multiome_obj@meta.data) && 
             any(!is.na(multiome_obj$Azimuth_cellType) & multiome_obj$Azimuth_cellType != "Unannotated")) {
     DimPlot(multiome_obj, reduction = "wnn.umap", group.by = "Azimuth_cellType", label = TRUE, repel = TRUE) + 
-      ggtitle(paste0(sample_id, " - Azimuth Cell Types")) + theme(legend.position = "right")
+      ggtitle(paste0(sample_id, " - WNN UMAP (Azimuth_cellType)")) + theme(legend.position = "right")
   } else NULL
   
   if (!is.null(p4)) {

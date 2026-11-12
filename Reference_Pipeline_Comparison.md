@@ -220,3 +220,18 @@ Based on our four-region multiome cohort (`GG001TB` Tumor Bulk, `GG001AMY` Amygd
   1. Compute an 8-dimensional WNN UMAP embedding on the tumor glioneuronal compartment.
   2. Fit lineage splines with `slingshot`, and model branch-point driver genes using `tradeSeq::fitGAM()` with `earlyDETest()`.
 
+
+---
+
+## Part 4: Signac & SCENIC+ Usage in the Reference Study
+
+Both **Signac** and **SCENIC+** were used in the reference pipeline, playing complementary roles:
+
+1. **Signac (Core ATAC-seq & Motif Framework in R):**
+   - [`00_snMultiome_data_integration.R`](file:///Users/franz/Documents/Code/Ganglioglioma/Human_Cortex_Dev_Multiome-main/RScript/00_snMultiome_data_integration.R#L4) loads `library(Signac)` for peak quantification (`FeatureMatrix`), `ChromatinAssay` construction, ATAC QC (`NucleosomeSignal`, `TSSEnrichment`), LSI dimensionality reduction (`RunTFIDF`, `RunSVD`), and Reciprocal LSI (`rlsi`) batch integration.
+   - [`18_Motif_analysis.R`](file:///Users/franz/Documents/Code/Ganglioglioma/Human_Cortex_Dev_Multiome-main/RScript/18_Motif_analysis.R#L1-L19) uses `Signac::AddMotifs()` (with `JASPAR2020`) and `Signac::RunChromVAR()` to compute per-cell TF motif accessibility deviation z-scores.
+
+2. **SCENIC+ (External eGRN Inference + `AUCell` Scoring in R):**
+   - The study used **SCENIC+** (the joint RNA+ATAC multiome successor to SCENIC) rather than RNA-only SCENIC.
+   - SCENIC+ network inference itself is **not** executed in the R scripts—it was run externally (in Python) to generate the enhancer-driven regulon (eGRN) gene-set file (`results/AUCell/582.sceplus.gmt`).
+   - [`06_AUCell.R`](file:///Users/franz/Documents/Code/Ganglioglioma/Human_Cortex_Dev_Multiome-main/RScript/06_AUCell.R#L18-L30) imports `582.sceplus.gmt`, scores every cell's raw RNA counts with `AUCell::AUCell_run()`, and stores the scores as a `"scenicplus_AUC"` assay in the Seurat object (which is later modeled along pseudotime in [`08_tradeSeq.R`](file:///Users/franz/Documents/Code/Ganglioglioma/Human_Cortex_Dev_Multiome-main/RScript/08_tradeSeq.R) and correlated with trait relevance scores in [`21_Correlation_test_of_TRS_and_AUCell_along_the_pseudotime.R`](file:///Users/franz/Documents/Code/Ganglioglioma/Human_Cortex_Dev_Multiome-main/RScript/21_Correlation_test_of_TRS_and_AUCell_along_the_pseudotime.R)).

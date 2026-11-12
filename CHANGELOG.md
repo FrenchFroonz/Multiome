@@ -6,6 +6,8 @@ All notable changes, architectural updates, and code modifications for this repo
 
 ## [Current - 2026-11-12]
 ### Added
+- **Post-Processed RNA UMAP Plots Colored by `ScType` & `Azimuth_cellType`**: Updated [`process_and_merge_atac.R`](file:///Users/franz/Documents/Code/Ganglioglioma/Multiome_workspace/process_and_merge_atac.R) and [`test_process_and_merge_atac.Rmd`](file:///Users/franz/Documents/Code/Ganglioglioma/Multiome_workspace/test_process_and_merge_atac.Rmd) to verify/compute the RNA `umap` reduction and plot post-processed RNA UMAPs colored by clusters, `ScType` (from the RNA object metadata), and `Azimuth_cellType` (both inline and as Page 1 of `<sample_id>_joint_wnn_umaps.pdf`). Also preserved any pre-existing `Azimuth_cellType` metadata column from the input RNA object.
+- **`ATAC_CNA_Implementation_Guide.md`**: Added technical overview and R implementation guide for single-cell ATAC copy-number alteration inference (`AtaCNA` / `AtaCNV`).
 - **Post-QC ATAC & Combined Multiome Diagnostic Plots**: Expanded `<sample_id>_atac_qc_diagnostics.pdf` in [`process_and_merge_atac.R`](file:///Users/franz/Documents/Code/Ganglioglioma/Multiome_workspace/process_and_merge_atac.R) and [`test_process_and_merge_atac.Rmd`](file:///Users/franz/Documents/Code/Ganglioglioma/Multiome_workspace/test_process_and_merge_atac.Rmd) to include both Pre-Filter ATAC QC plots (with explicit threshold lines) and Post-Filter plots:
   - Post-filter ATAC violin plots (`nCount_ATAC`, `nFeature_ATAC`, `TSS.enrichment`, `nucleosome_signal`) and depth vs. TSS scatter plot on `atac_filtered`.
   - Final merged Multiome post-QC violin plots combining RNA (`nCount_RNA`, `nFeature_RNA`, mitochondrial %) and ATAC metrics on `multiome_obj`.
