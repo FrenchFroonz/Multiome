@@ -91,6 +91,9 @@ suppressPackageStartupMessages({
   library(Signac)
   library(JASPAR2020)
   library(TFBSTools)
+  library(motifmatchr)
+  library(chromVAR)
+  library(SummarizedExperiment)
   library(BSgenome.Hsapiens.UCSC.hg38)
   library(EnsDb.Hsapiens.v86)
   library(GenomicRanges)
@@ -108,16 +111,20 @@ suppressPackageStartupMessages({
 
 ## 3. Load Processed Multiome Object & Verify Cell-Type Grouping
 
-We load the processed `multiome_obj` `.rds` file, verify the cell-type annotation column (`ScType` or `Azimuth_cellType`), and ensure the ATAC `Fragment` file pointer is active.
+We load the processed `multiome_obj` `.rds` file (automatically preferring the cached `_with_chromvar.rds` if already computed), verify the cell-type annotation column (`ScType` or `Azimuth_cellType`), and ensure the ATAC `Fragment` file pointer is active.
 
 ```{r load_object}
-if (!file.exists(multiome_rds_path)) {
+chromvar_rds_path <- file.path(output_dir, paste0(sample_id, "_multiome_merged_with_chromvar.rds"))
+if (file.exists(chromvar_rds_path)) {
+  cat("Found cached Multiome RDS with 'chromvar' assay:", chromvar_rds_path, "\n")
+  multiome_obj <- readRDS(chromvar_rds_path)
+} else if (file.exists(multiome_rds_path)) {
+  cat("Loading processed Multiome Seurat object:", multiome_rds_path, "\n")
+  multiome_obj <- readRDS(multiome_rds_path)
+} else {
   stop("Processed Multiome RDS file not found at: ", multiome_rds_path,
        "\nPlease check 'multiome_rds_path' in Chunk 1.")
 }
-
-cat("Loading processed Multiome Seurat object...\n")
-multiome_obj <- readRDS(multiome_rds_path)
 cat("Loaded object with", ncol(multiome_obj), "cells and assays:",
     paste(names(multiome_obj@assays), collapse = ", "), "\n")
 
@@ -185,30 +192,82 @@ motif_lookup <- data.frame(
     gene_symbol = toupper(sub("\\(.*\\)$", "", motif_name))
   )
 
+# Compatibility wrapper for Signac >= 1.16.0 (where RunChromVAR was removed from Signac)
+run_chromvar_compat <- function(object, genome, assay = "ATAC", new.assay.name = "chromvar") {
+  if (exists("RunChromVAR", where = asNamespace("Signac"), mode = "function")) {
+    Signac_RunChromVAR <- get("RunChromVAR", envir = asNamespace("Signac"))
+    return(Signac_RunChromVAR(
+      object         = object,
+      genome         = genome,
+      assay          = assay,
+      new.assay.name = new.assay.name
+    ))
+  }
+  
+  cat("Signac >= 1.16.0 detected (RunChromVAR wrapper removed); running chromVAR directly...\n")
+  peak_counts  <- GetAssayData(object, assay = assay, layer = "counts")
+  peak_ranges  <- granges(object[[assay]])
+  motif_matrix <- GetMotifData(object, assay = assay, slot = "data")
+  
+  # Keep peaks with > 0 total counts across cells
+  keep_peaks <- Matrix::rowSums(peak_counts) > 0
+  if (sum(!keep_peaks) > 0) {
+    peak_counts  <- peak_counts[keep_peaks, , drop = FALSE]
+    peak_ranges  <- peak_ranges[keep_peaks]
+    motif_matrix <- motif_matrix[keep_peaks, , drop = FALSE]
+  }
+  
+  chromvar_se <- SummarizedExperiment::SummarizedExperiment(
+    assays    = list(counts = peak_counts),
+    rowRanges = peak_ranges
+  )
+  chromvar_se <- chromVAR::addGCBias(object = chromvar_se, genome = genome)
+  bg_peaks    <- chromVAR::getBackgroundPeaks(object = chromvar_se)
+  dev         <- chromVAR::computeDeviations(
+    object           = chromvar_se,
+    annotations      = motif_matrix,
+    background_peaks = bg_peaks
+  )
+  
+  z_mat <- chromVAR::deviationScores(dev)
+  rownames(z_mat) <- colnames(motif_matrix)
+  colnames(z_mat) <- colnames(object)
+  z_mat[is.na(z_mat)] <- 0
+  
+  object[[new.assay.name]] <- Seurat::CreateAssayObject(data = z_mat)
+  return(object)
+}
+
 if (!"chromvar" %in% names(multiome_obj@assays)) {
   cat("Computing JASPAR2020 motif positions and running chromVAR...\n")
   
-  # Keep standard chromosomes in BSgenome.Hsapiens.UCSC.hg38
-  main_chroms <- standardChromosomes(BSgenome.Hsapiens.UCSC.hg38)
-  atac_gr <- granges(multiome_obj[["ATAC"]])
-  keep_peaks <- as.logical(seqnames(atac_gr) %in% main_chroms) & (width(atac_gr) > 75)
-  
-  if (sum(!keep_peaks) > 0) {
-    cat(sprintf("Filtering ATAC assay to %d / %d standard-chromosome peaks (width > 75 bp)...\n",
-                sum(keep_peaks), length(keep_peaks)))
-    multiome_obj[["ATAC"]] <- subset(multiome_obj[["ATAC"]], features = rownames(multiome_obj[["ATAC"]])[keep_peaks])
+  # Only run AddMotifs if motifs are not yet attached to the ATAC assay
+  if (is.null(Motifs(multiome_obj[["ATAC"]]))) {
+    # Keep standard chromosomes in BSgenome.Hsapiens.UCSC.hg38
+    main_chroms <- standardChromosomes(BSgenome.Hsapiens.UCSC.hg38)
+    atac_gr <- granges(multiome_obj[["ATAC"]])
+    keep_peaks <- as.logical(seqnames(atac_gr) %in% main_chroms) & (width(atac_gr) > 75)
+    
+    if (sum(!keep_peaks) > 0) {
+      cat(sprintf("Filtering ATAC assay to %d / %d standard-chromosome peaks (width > 75 bp)...\n",
+                  sum(keep_peaks), length(keep_peaks)))
+      multiome_obj[["ATAC"]] <- subset(multiome_obj[["ATAC"]], features = rownames(multiome_obj[["ATAC"]])[keep_peaks])
+    }
+    
+    # Attach motif matrix
+    multiome_obj <- AddMotifs(
+      object = multiome_obj,
+      genome = BSgenome.Hsapiens.UCSC.hg38,
+      pfm    = pfm
+    )
+  } else {
+    cat("Motif object already attached to ATAC assay; skipping AddMotifs().\n")
   }
   
-  # Attach motif matrix and run chromVAR
-  multiome_obj <- AddMotifs(
+  multiome_obj <- run_chromvar_compat(
     object = multiome_obj,
     genome = BSgenome.Hsapiens.UCSC.hg38,
-    pfm    = pfm
-  )
-  
-  multiome_obj <- RunChromVAR(
-    object = multiome_obj,
-    genome = BSgenome.Hsapiens.UCSC.hg38
+    assay  = "ATAC"
   )
   
   # Save updated RDS with chromvar assay so you don't have to recompute it next time
