@@ -4,7 +4,18 @@ All notable changes, architectural updates, and code modifications for this repo
 
 ---
 
-## [Current - 2026-11-12]
+## [Current - 2026-11-13]
+### Added
+- **Data-Driven Lineage-Defining TF Discovery in [`03_Figure1E_TriModal_TF_Validation.Rmd`](file:///Users/franz/Documents/Code/Ganglioglioma/Multiome_workspace/03_Figure1E_TriModal_TF_Validation.Rmd) (Chunk 5)**: Added automated differential expression discovery (`Seurat::FindAllMarkers`) intersected with `JASPAR2020` `chromVAR` motifs and `EnsDb.Hsapiens.v86` TSS annotations to identify the **top 10–15 lineage-defining TFs specific to our dataset** across `ScType` / `Azimuth_cellType` / `seurat_clusters` (prioritizing TFs with concordant positive `chromVAR` motif activity and ordering columns along cell types for a diagonal cascade), plus CSV export (`<sample_id>_differential_lineage_TFs.csv`).
+- **`03_Figure1E_TriModal_TF_Validation.Rmd`**: Standalone R Markdown notebook recreating the 3-panel multimodal validation figure (Figure 1e from Wang et al., *Nature* 2025) on the saved `<sample_id>_multiome_merged.rds` object without re-running preprocessing:
+  - **Left Panel (Gene Expression):** Dot plot of % expressing cells and `[0, 1]` min-max normalized mean RNA expression across cell types (`ScType` or `Azimuth_cellType`).
+  - **Middle Panel (Chromatin Accessibility):** Aggregated ATAC fragment coverage tracks (`Signac::CoveragePlot`) centered at the TSS/promoter window of each signature TF.
+  - **Right Panel (Motif Activity):** `JASPAR2020` + `Signac::RunChromVAR` motif enrichment pipeline (`18_Motif_analysis.R`) and `[0, 1]` min-max normalized per-cell-type `chromVAR` activity heatmap.
+- **Updated [`TODO.md`](file:///Users/franz/Documents/Code/Ganglioglioma/Multiome_workspace/TODO.md)**: Added the "Next Step: Integrating the Rest of the Paper's Analysis" roadmap (`04_Cohort_Integration_RPCA_rLSI.Rmd`, `05_Tumor_to_Normal_SingleCellNet.Rmd`, `06_Slingshot_tradeSeq_Trajectory.Rmd`).
+
+---
+
+## [2026-11-12]
 ### Added
 - **Post-Processed RNA UMAP Plots Colored by `ScType` & `Azimuth_cellType`**: Updated [`process_and_merge_atac.R`](file:///Users/franz/Documents/Code/Ganglioglioma/Multiome_workspace/process_and_merge_atac.R) and [`test_process_and_merge_atac.Rmd`](file:///Users/franz/Documents/Code/Ganglioglioma/Multiome_workspace/test_process_and_merge_atac.Rmd) to verify/compute the RNA `umap` reduction and plot post-processed RNA UMAPs colored by clusters, `ScType` (from the RNA object metadata), and `Azimuth_cellType` (both inline and as Page 1 of `<sample_id>_joint_wnn_umaps.pdf`). Also preserved any pre-existing `Azimuth_cellType` metadata column from the input RNA object.
 - **`ATAC_CNA_Implementation_Guide.md`**: Added technical overview and R implementation guide for single-cell ATAC copy-number alteration inference (`AtaCNA` / `AtaCNV`).

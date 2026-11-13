@@ -1,0 +1,675 @@
+---
+title: "Figure 1E Recreation: Tri-Modal TF Validation (Gene Expression, Promoter Accessibility & chromVAR Motif Activity)"
+author: "Ganglioglioma Multiome Pipeline"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = TRUE,
+  fig.width = 16,
+  fig.height = 9
+)
+```
+
+## Overview: Recreating Figure 1e from Wang et al. (*Nature*, 2025)
+
+This standalone R Markdown notebook recreates the **3-panel multimodal validation plot (Figure 1e)** from the reference study (*"Molecular and cellular dynamics of the developing human neocortex"*, Wang et al., *Nature* 2025) directly on your already-processed Multiome Seurat object (`<sample_id>_multiome_merged.rds`), **without** needing to re-run the preprocessing pipeline.
+
+### The Three Molecular Readouts Aligned Across Cell Types:
+1. **Left Panel — Gene Expression (snRNA-seq):** Dot plot displaying the **fraction of cells expressing each transcription factor (`%`)** (dot size) and the **min–max normalized (`[0, 1]`) mean RNA expression** within each cell type (viridis fill color).
+2. **Middle Panel — Promoter Chromatin Accessibility (snATAC-seq):** Aggregated ATAC-seq fragment coverage tracks (`Signac::CoveragePlot`) centered at the **Transcription Start Site (TSS / promoter window)** of each transcription factor across cell types.
+3. **Right Panel — Motif Regulatory Activity (`chromVAR`):** Heatmap displaying the **min–max normalized (`[0, 1]`) mean `chromVAR` motif accessibility score** (`JASPAR2020`) for each transcription factor's binding motif across the genome.
+
+---
+
+## 1. Configure Input Paths & Parameters
+
+Edit the sample ID, input `.rds` path, cell-type metadata column (`"ScType"` or `"Azimuth_cellType"`), and the list of signature Transcription Factors below.
+
+```{r config}
+# 1. Sample Identifier
+sample_id <- "GG001AC"
+
+# 2. Path to the already-merged Multiome Seurat object (.rds) from test_process_and_merge_atac.Rmd
+output_dir <- paste0("./outputs/test_", sample_id)
+multiome_rds_path <- file.path(output_dir, paste0(sample_id, "_multiome_merged.rds"))
+
+# Optional fallback if you saved the RDS in another directory:
+# multiome_rds_path <- "/path/to/GG001AC_multiome_merged.rds"
+
+# 3. Path to 10x ATAC fragments file (used by CoveragePlot to stream promoter coverage tracks)
+fragments_path <- paste0(
+  "/data-pure/sequencing/ngs/NGS2026_10893/HG38/count/cellranger/",
+  sample_id, "/atac_fragments.tsv.gz"
+)
+
+# 4. Which metadata column defines the cell types (rows of Figure 1E)?
+# Options: "ScType" (from your RNA object), "Azimuth_cellType", or "seurat_clusters"
+preferred_celltype_col <- "ScType"
+
+# 5. Lineage-Defining Transcription Factor Selection Mode
+# Set auto_discover_tfs = TRUE to automatically identify the top 10-15 lineage-defining TFs
+# specific to your dataset via differential expression across cell types/clusters (intersected
+# with JASPAR2020 motifs and ATAC gene annotations).
+auto_discover_tfs <- TRUE
+target_n_tfs      <- 12   # Target number of lineage-defining TFs to plot (recommended: 10 to 15)
+min_target_tfs    <- 10
+max_target_tfs    <- 15
+
+# Fallback / manual TF list (used if auto_discover_tfs = FALSE, or as fallback):
+# Reference paper Fig. 1e TFs: c("PAX6", "EMX2", "EOMES", "TBR1", "MEF2C", "MAF", "SOX8", "IRF8")
+manual_signature_tfs <- c("PAX6", "EMX2", "EOMES", "TBR1", "MEF2C", "MAF", "SOX8", "IRF8")
+
+# Promoter window (+/- bp around the canonical TSS) for the middle panel coverage tracks
+promoter_flank_bp <- 1500
+
+cat("Sample ID:          ", sample_id, "\n")
+cat("Multiome RDS Path:  ", multiome_rds_path, "\n")
+cat("Cell-Type Column:   ", preferred_celltype_col, "\n")
+cat("Auto-Discover TFs:  ", auto_discover_tfs, " (Target: ", target_n_tfs, " TFs; range ",
+    min_target_tfs, "-", max_target_tfs, ")\n", sep = "")
+```
+
+---
+
+## 2. Load Required Libraries
+
+We load `Seurat`, `Signac`, `JASPAR2020`, `TFBSTools`, and `BSgenome.Hsapiens.UCSC.hg38` (matching [`18_Motif_analysis.R`](file:///Users/franz/Documents/Code/Ganglioglioma/Human_Cortex_Dev_Multiome-main/RScript/18_Motif_analysis.R)), along with `ggplot2`, `patchwork`, `dplyr`, `tidyr`, and `viridis` for assembling the 3-panel figure.
+
+```{r load_libraries}
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(Signac)
+  library(JASPAR2020)
+  library(TFBSTools)
+  library(BSgenome.Hsapiens.UCSC.hg38)
+  library(EnsDb.Hsapiens.v86)
+  library(GenomicRanges)
+  library(GenomeInfoDb)
+  library(ggplot2)
+  library(patchwork)
+  library(dplyr)
+  library(tidyr)
+  library(viridis)
+  library(scales)
+})
+```
+
+---
+
+## 3. Load Processed Multiome Object & Verify Cell-Type Grouping
+
+We load the processed `multiome_obj` `.rds` file, verify the cell-type annotation column (`ScType` or `Azimuth_cellType`), and ensure the ATAC `Fragment` file pointer is active.
+
+```{r load_object}
+if (!file.exists(multiome_rds_path)) {
+  stop("Processed Multiome RDS file not found at: ", multiome_rds_path,
+       "\nPlease check 'multiome_rds_path' in Chunk 1.")
+}
+
+cat("Loading processed Multiome Seurat object...\n")
+multiome_obj <- readRDS(multiome_rds_path)
+cat("Loaded object with", ncol(multiome_obj), "cells and assays:",
+    paste(names(multiome_obj@assays), collapse = ", "), "\n")
+
+# Resolve cell-type metadata column (checks preferred_celltype_col first, then fallbacks)
+candidate_cols <- unique(c(
+  preferred_celltype_col,
+  "ScType", "sctype", "SCType",
+  "Azimuth_cellType", "seurat_clusters"
+))
+matched_cols <- intersect(candidate_cols, colnames(multiome_obj@meta.data))
+
+if (length(matched_cols) == 0) {
+  stop("None of the candidate cell-type columns were found in multiome_obj@meta.data.")
+}
+celltype_col <- matched_cols[1]
+cat("Using cell-type grouping column:", celltype_col, "\n")
+
+# Clean NA / empty labels and set as active Idents
+cell_labels <- as.character(multiome_obj@meta.data[[celltype_col]])
+cell_labels[is.na(cell_labels) | cell_labels == ""] <- "Unannotated"
+multiome_obj@meta.data[[celltype_col]] <- factor(cell_labels)
+Idents(multiome_obj) <- celltype_col
+
+# Establish consistent top-to-bottom cell-type ordering across all 3 panels
+celltype_levels <- levels(Idents(multiome_obj))
+cat("Cell types (", length(celltype_levels), "):\n", sep = "")
+print(table(Idents(multiome_obj)))
+
+# Ensure gene annotations are attached to the ATAC assay
+DefaultAssay(multiome_obj) <- "ATAC"
+if (is.null(Annotation(multiome_obj)) || length(Annotation(multiome_obj)) == 0) {
+  cat("Attaching EnsDb.Hsapiens.v86 (hg38) gene annotations to ATAC assay...\n")
+  annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+  seqlevelsStyle(annotations) <- "UCSC"
+  genome(annotations) <- "hg38"
+  Annotation(multiome_obj) <- annotations
+}
+```
+
+---
+
+## 4. Compute JASPAR2020 Motif Matrix & `chromVAR` Activity (`18_Motif_analysis.R`)
+
+Following [`18_Motif_analysis.R`](file:///Users/franz/Documents/Code/Ganglioglioma/Human_Cortex_Dev_Multiome-main/RScript/18_Motif_analysis.R) and the paper's Methods (*"TF motif enrichment analysis"*, p. 12):
+- If the `"chromvar"` assay is not yet present in `multiome_obj`, we filter the ATAC peaks to standard chromosomes (`BSgenome.Hsapiens.UCSC.hg38`), fetch the vertebrate CORE position frequency matrices from `JASPAR2020`, attach motifs via `Signac::AddMotifs()`, and compute per-cell motif deviation z-scores via `Signac::RunChromVAR()`.
+- We also save a copy of the object with the `"chromvar"` assay so future runs of this notebook skip `RunChromVAR()` and finish in seconds.
+
+```{r run_chromvar}
+DefaultAssay(multiome_obj) <- "ATAC"
+
+# Fetch JASPAR2020 vertebrate CORE motifs
+pfm <- getMatrixSet(
+  x = JASPAR2020,
+  opts = list(collection = "CORE", tax_group = "vertebrates", all_versions = FALSE)
+)
+
+# Build a lookup table mapping JASPAR Motif ID <-> TF Gene Symbol
+motif_lookup <- data.frame(
+  motif_id   = names(pfm),
+  motif_name = vapply(pfm, function(x) name(x), character(1)),
+  stringsAsFactors = FALSE
+) %>%
+  mutate(
+    # Strip Secondary/Var annotations like "(var.2)" and uppercase for gene matching
+    gene_symbol = toupper(sub("\\(.*\\)$", "", motif_name))
+  )
+
+if (!"chromvar" %in% names(multiome_obj@assays)) {
+  cat("Computing JASPAR2020 motif positions and running chromVAR...\n")
+  
+  # Keep standard chromosomes in BSgenome.Hsapiens.UCSC.hg38
+  main_chroms <- standardChromosomes(BSgenome.Hsapiens.UCSC.hg38)
+  atac_gr <- granges(multiome_obj[["ATAC"]])
+  keep_peaks <- as.logical(seqnames(atac_gr) %in% main_chroms) & (width(atac_gr) > 75)
+  
+  if (sum(!keep_peaks) > 0) {
+    cat(sprintf("Filtering ATAC assay to %d / %d standard-chromosome peaks (width > 75 bp)...\n",
+                sum(keep_peaks), length(keep_peaks)))
+    multiome_obj[["ATAC"]] <- subset(multiome_obj[["ATAC"]], features = rownames(multiome_obj[["ATAC"]])[keep_peaks])
+  }
+  
+  # Attach motif matrix and run chromVAR
+  multiome_obj <- AddMotifs(
+    object = multiome_obj,
+    genome = BSgenome.Hsapiens.UCSC.hg38,
+    pfm    = pfm
+  )
+  
+  multiome_obj <- RunChromVAR(
+    object = multiome_obj,
+    genome = BSgenome.Hsapiens.UCSC.hg38
+  )
+  
+  # Save updated RDS with chromvar assay so you don't have to recompute it next time
+  chromvar_rds_path <- file.path(output_dir, paste0(sample_id, "_multiome_merged_with_chromvar.rds"))
+  cat("Saving updated Multiome object with 'chromvar' assay to:", chromvar_rds_path, "\n")
+  saveRDS(multiome_obj, file = chromvar_rds_path)
+} else {
+  cat("'chromvar' assay already present in multiome_obj! Skipping RunChromVAR computation.\n")
+}
+```
+
+---
+
+## 5. Data-Driven Discovery of 10–15 Lineage-Defining TFs Across Clusters/Cell Types
+
+In Wang et al. (*Nature* 2025, Fig. 1e & Methods p. 12), lineage-defining transcription factors were identified by intersecting differentially expressed genes per cell type with TFs present in `JASPAR2020` and evaluating their `chromVAR` motif activity.
+
+Because the 8 fetal neocortical TFs in the paper (`PAX6`, `EMX2`, `EOMES`, `TBR1`, `MEF2C`, `MAF`, `SOX8`, `IRF8`) are specific to embryonic cortical development, this chunk automatically discovers the **10 to 15 lineage-defining TFs specific to our Ganglioglioma dataset**:
+1. **Tri-Modal Candidate TF Universe:** Restricts candidate genes to human Transcription Factors present simultaneously in:
+   - The RNA expression matrix (`RNA` or `SCT` assay),
+   - The `EnsDb.Hsapiens.v86` genome annotation (`Annotation(multiome_obj)` for promoter TSS coordinates), and
+   - The `JASPAR2020` `chromVAR` motif matrix (`rownames(multiome_obj[["chromvar"]])`).
+2. **Differential Expression Across Cell Types/Clusters (`FindAllMarkers`):** Identifies TFs significantly upregulated (`only.pos = TRUE`, `p_val_adj < 0.05`) in each cell type/cluster (`ScType`, `Azimuth_cellType`, or `seurat_clusters`).
+3. **Concordant `chromVAR` Motif Activity:** Computes the mean `chromVAR` motif deviation z-score (`mean_chromvar_z`) for each candidate TF in each cell type, prioritizing TFs with both strong differential RNA expression (`avg_log2FC`) and positive motif accessibility (`mean_chromvar_z > 0`).
+4. **Balanced Top 10–15 Selection & Diagonal Ordering:** Selects the top 1–3 TFs per cluster/cell type via round-robin ranking to yield `target_n_tfs` (10–15) unique TFs, ordered by their peak cell type (`celltype_levels`) so the 3-panel plot forms a clean diagonal cascade. The full table of differentially expressed TFs is also saved to `<sample_id>_differential_lineage_TFs.csv`.
+
+```{r discover_and_match_tfs}
+# Determine RNA expression assay ("SCT" or "RNA")
+rna_assay <- if ("SCT" %in% names(multiome_obj@assays)) "SCT" else "RNA"
+rna_genes <- rownames(multiome_obj[[rna_assay]])
+annot_genes <- unique(Annotation(multiome_obj)$gene_name)
+chromvar_motifs <- rownames(multiome_obj[["chromvar"]])
+
+# Build the universe of candidate TFs present across all 3 modalities (RNA + ATAC TSS + JASPAR2020 Motif)
+candidate_tf_map <- motif_lookup %>%
+  filter(
+    gene_symbol %in% rna_genes,
+    gene_symbol %in% annot_genes,
+    motif_id %in% chromvar_motifs
+  ) %>%
+  group_by(gene_symbol) %>%
+  slice(1) %>%
+  ungroup()
+
+cat(sprintf(
+  "Found %d candidate JASPAR2020 Transcription Factors present in RNA (%s), ATAC gene annotations, and chromVAR.\n",
+  nrow(candidate_tf_map), rna_assay
+))
+
+if (isTRUE(auto_discover_tfs)) {
+  cat("Running differential expression (FindAllMarkers) across ", celltype_col,
+      " to discover the top ", min_target_tfs, "-", max_target_tfs, " lineage-defining TFs...\n", sep = "")
+  
+  DefaultAssay(multiome_obj) <- rna_assay
+  Idents(multiome_obj) <- factor(Idents(multiome_obj), levels = celltype_levels)
+  
+  # If using Seurat v5 Assay5 with multiple split layers, join layers before FindAllMarkers
+  if (rna_assay == "RNA" && inherits(multiome_obj[["RNA"]], "Assay5") && length(Layers(multiome_obj[["RNA"]])) > 1) {
+    multiome_obj[["RNA"]] <- JoinLayers(multiome_obj[["RNA"]])
+  }
+  
+  # 1. Run differential expression restricted to candidate TFs
+  de_tfs <- FindAllMarkers(
+    object          = multiome_obj,
+    assay           = rna_assay,
+    features        = candidate_tf_map$gene_symbol,
+    only.pos        = TRUE,
+    min.pct         = 0.05,
+    logfc.threshold = 0.15,
+    verbose         = FALSE
+  )
+  
+  if (nrow(de_tfs) == 0) {
+    warning("No differentially expressed TFs passed thresholds; falling back to manual_signature_tfs.")
+    signature_tfs <- manual_signature_tfs
+  } else {
+    # 2. Compute per-cluster mean chromVAR z-score for every candidate TF motif
+    chromvar_all <- GetAssayData(
+      multiome_obj,
+      assay = "chromvar",
+      layer = "data"
+    )[candidate_tf_map$motif_id, , drop = FALSE]
+    
+    cluster_vec <- as.character(Idents(multiome_obj))
+    chromvar_cluster_means <- lapply(celltype_levels, function(cl) {
+      cells_cl <- which(cluster_vec == cl)
+      if (length(cells_cl) == 0) return(NULL)
+      row_means <- Matrix::rowMeans(chromvar_all[, cells_cl, drop = FALSE], na.rm = TRUE)
+      data.frame(
+        cluster         = cl,
+        motif_id        = names(row_means),
+        mean_chromvar_z = as.numeric(row_means),
+        stringsAsFactors = FALSE
+      )
+    }) %>% bind_rows()
+    
+    # 3. Annotate DE TFs with JASPAR motif ID and cluster-specific chromVAR activity
+    de_tfs_annotated <- de_tfs %>%
+      inner_join(candidate_tf_map, by = c("gene" = "gene_symbol")) %>%
+      left_join(
+        chromvar_cluster_means,
+        by = c("cluster" = "cluster", "motif_id" = "motif_id")
+      ) %>%
+      mutate(
+        cluster = factor(as.character(cluster), levels = celltype_levels),
+        concordant_motif = !is.na(mean_chromvar_z) & (mean_chromvar_z > 0)
+      ) %>%
+      arrange(cluster, desc(concordant_motif), desc(avg_log2FC), p_val_adj)
+    
+    # Export full differential TF table to CSV
+    de_csv_path <- file.path(output_dir, paste0(sample_id, "_differential_lineage_TFs.csv"))
+    write.csv(de_tfs_annotated, file = de_csv_path, row.names = FALSE)
+    cat("Saved full differential TF table (", nrow(de_tfs_annotated), " entries) to: ", de_csv_path, "\n", sep = "")
+    
+    # Filter to statistically significant markers (p_val_adj < 0.05; fallback to p_val < 0.05 if needed)
+    sig_de_tfs <- de_tfs_annotated %>% filter(p_val_adj < 0.05)
+    if ( length(unique(sig_de_tfs$gene)) < min_target_tfs ) {
+      sig_de_tfs <- de_tfs_annotated %>% filter(p_val < 0.05)
+    }
+    
+    # Assign cluster rank per TF within each cell type
+    ranked_per_cluster <- sig_de_tfs %>%
+      group_by(cluster) %>%
+      mutate(rank_in_cluster = row_number()) %>%
+      ungroup() %>%
+      arrange(rank_in_cluster, cluster, desc(avg_log2FC))
+    
+    # Round-robin selection across clusters (rank 1 per cluster first, then rank 2, 3...)
+    # to select target_n_tfs (bounded between min_target_tfs and max_target_tfs)
+    n_goal <- min(max(target_n_tfs, min_target_tfs), max_target_tfs)
+    selected_rows <- list()
+    seen_genes <- character(0)
+    
+    for (r in seq_len(max(ranked_per_cluster$rank_in_cluster, na.rm = TRUE))) {
+      sub_r <- ranked_per_cluster %>% filter(rank_in_cluster == r)
+      for (i in seq_len(nrow(sub_r))) {
+        g <- sub_r$gene[i]
+        if (!g %in% seen_genes) {
+          seen_genes <- c(seen_genes, g)
+          selected_rows[[length(selected_rows) + 1]] <- sub_r[i, , drop = FALSE]
+        }
+        if (length(seen_genes) >= n_goal) break
+      }
+      if (length(seen_genes) >= n_goal) break
+    }
+    
+    selected_tf_df <- bind_rows(selected_rows) %>%
+      mutate(cluster = factor(as.character(cluster), levels = celltype_levels)) %>%
+      arrange(cluster, rank_in_cluster, desc(avg_log2FC))
+    
+    signature_tfs <- as.character(selected_tf_df$gene)
+    cat(sprintf(
+      "Auto-discovered %d lineage-defining TFs across %d cell types/clusters:\n  %s\n",
+      length(signature_tfs),
+      length(unique(selected_tf_df$cluster)),
+      paste(signature_tfs, collapse = ", ")
+    ))
+  }
+} else {
+  signature_tfs <- manual_signature_tfs
+  cat("Using manual signature TFs:\n  ", paste(signature_tfs, collapse = ", "), "\n")
+}
+
+# Map final signature TFs to their JASPAR motif IDs
+tf_map <- candidate_tf_map %>%
+  filter(gene_symbol %in% signature_tfs)
+
+valid_tfs <- signature_tfs[signature_tfs %in% tf_map$gene_symbol]
+missing_tfs <- setdiff(signature_tfs, valid_tfs)
+if (length(missing_tfs) > 0) {
+  message("Note: The following TFs were missing from one of the modalities and skipped: ",
+          paste(missing_tfs, collapse = ", "))
+}
+if (length(valid_tfs) == 0) {
+  stop("No signature TFs matched across RNA, ATAC annotations, and JASPAR2020 chromVAR motifs!")
+}
+
+tf_map <- tf_map %>%
+  filter(gene_symbol %in% valid_tfs) %>%
+  mutate(gene_symbol = factor(gene_symbol, levels = valid_tfs)) %>%
+  arrange(gene_symbol)
+
+if (exists("selected_tf_df") && nrow(selected_tf_df) > 0) {
+  display_df <- selected_tf_df %>%
+    select(
+      Peak_Cluster = cluster,
+      TF_Gene      = gene,
+      JASPAR_Motif = motif_id,
+      avg_log2FC,
+      pct.1,
+      pct.2,
+      p_val_adj,
+      mean_chromvar_z
+    )
+  knitr::kable(
+    display_df,
+    digits  = 3,
+    caption = paste0("Top ", nrow(display_df), " Data-Driven Lineage-Defining TFs Discovered Across ", celltype_col)
+  )
+} else {
+  knitr::kable(tf_map, caption = "Validated Signature TFs & Corresponding JASPAR2020 Motif IDs")
+}
+```
+
+---
+
+## 6. Panel 1 (Left): Gene Expression Dot Plot (`Fraction of cells` & `Min-Max Normalized Mean Expression`)
+
+In Figure 1e (left panel):
+- **Rows:** Cell types (`celltype_levels`, ordered top-to-bottom).
+- **Columns:** Signature TFs (`valid_tfs`, labels placed at the top and rotated 90°).
+- **Dot Size:** Percentage of cells within the cell type expressing the TF (`pct_exp > 0`).
+- **Dot Fill Color:** Mean normalized RNA expression in each cell type, **min–max scaled to `[0, 1]`** across cell types for each TF using the `viridis` palette.
+
+```{r panel1_gene_expression, fig.width=5, fig.height=8}
+DefaultAssay(multiome_obj) <- rna_assay
+expr_mat <- GetAssayData(multiome_obj, assay = rna_assay, layer = "data")[valid_tfs, , drop = FALSE]
+
+# Compute per-cell-type mean expression and % expressing cells
+cell_groups <- Idents(multiome_obj)
+
+gex_summary <- lapply(valid_tfs, function(tf) {
+  vals <- as.numeric(expr_mat[tf, ])
+  df <- data.frame(
+    cell_type = cell_groups,
+    expr      = vals
+  ) %>%
+    group_by(cell_type) %>%
+    summarise(
+      mean_expr = mean(expr, na.rm = TRUE),
+      pct_exp   = mean(expr > 0, na.rm = TRUE) * 100,
+      .groups   = "drop"
+    ) %>%
+    mutate(
+      tf = tf,
+      # Min-max normalize [0, 1] across cell types for this TF (as in Fig. 1e)
+      norm_expr = if (max(mean_expr) > min(mean_expr)) {
+        (mean_expr - min(mean_expr)) / (max(mean_expr) - min(mean_expr))
+      } else {
+        0
+      }
+    )
+  df
+}) %>% bind_rows()
+
+# Lock factor levels so top-to-bottom row order matches across all 3 panels
+gex_summary$cell_type <- factor(gex_summary$cell_type, levels = rev(celltype_levels))
+gex_summary$tf <- factor(gex_summary$tf, levels = valid_tfs)
+
+p_panel1_gex <- ggplot(gex_summary, aes(x = tf, y = cell_type)) +
+  geom_point(aes(size = pct_exp, fill = norm_expr), shape = 21, color = "black", stroke = 0.4) +
+  scale_size_continuous(
+    name   = "Fraction of cells\nin group (%)",
+    range  = c(0.5, 5.5),
+    limits = c(0, 100),
+    breaks = c(20, 40, 60, 80, 100)
+  ) +
+  scale_fill_viridis_c(
+    name   = "Mean expression\nin group",
+    option = "viridis",
+    limits = c(0, 1),
+    breaks = c(0, 0.5, 1.0)
+  ) +
+  scale_x_discrete(position = "top") +
+  labs(title = "Gene expression", x = NULL, y = NULL) +
+  theme_bw(base_size = 11) +
+  theme(
+    plot.title        = element_text(hjust = 0.5, face = "bold", size = 12),
+    axis.text.x.top   = element_text(angle = 90, hjust = 0, vjust = 0.5, face = "italic", color = "black"),
+    axis.text.y       = element_text(color = "black", size = 10),
+    panel.grid.major  = element_line(color = "grey92", linewidth = 0.3),
+    legend.position   = "bottom",
+    legend.box        = "horizontal",
+    legend.title      = element_text(size = 8),
+    legend.text       = element_text(size = 7),
+    plot.margin       = margin(5, 2, 5, 5)
+  )
+
+print(p_panel1_gex)
+```
+
+---
+
+## 7. Panel 2 (Middle): Promoter Chromatin Accessibility Coverage Tracks (`Signac::CoveragePlot`)
+
+In Figure 1e (middle panel):
+- For each signature TF, we locate its **canonical Transcription Start Site (TSS / promoter region)** in `Annotation(multiome_obj)` and extend by `+/- promoter_flank_bp` (default $\pm 1,500\text{ bp}$).
+- We use `Signac::CoveragePlot()` to plot aggregated ATAC-seq insertion coverage across all cell types (in the exact `celltype_levels` order) with the gene TSS model underneath.
+
+```{r panel2_promoter_accessibility, fig.width=12, fig.height=8}
+DefaultAssay(multiome_obj) <- "ATAC"
+Idents(multiome_obj) <- factor(Idents(multiome_obj), levels = celltype_levels)
+
+# Helper function to compute the promoter GRanges window around a gene's TSS
+get_promoter_region <- function(gene_symbol, annot_gr, flank_bp = 1500) {
+  gene_sub <- annot_gr[!is.na(annot_gr$gene_name) & annot_gr$gene_name == gene_symbol]
+  if (length(gene_sub) == 0) return(gene_symbol)
+  
+  # Collapse gene span and determine canonical 5' TSS coordinate
+  strand_val <- as.character(strand(gene_sub)[1])
+  chr_val    <- as.character(seqnames(gene_sub)[1])
+  tss_coord  <- if (strand_val == "-") max(end(gene_sub)) else min(start(gene_sub))
+  
+   sprintf("%s-%d-%d", chr_val, max(1, tss_coord - flank_bp), tss_coord + flank_bp)
+}
+
+annot_gr <- Annotation(multiome_obj)
+
+# Generate a distinct palette matching the number of cell types
+n_types <- length(celltype_levels)
+type_palette <- scales::hue_pal()(n_types)
+names(type_palette) <- celltype_levels
+
+cov_plot_list <- lapply(seq_along(valid_tfs), function(idx) {
+  tf <- valid_tfs[idx]
+  promoter_region <- get_promoter_region(tf, annot_gr, flank_bp = promoter_flank_bp)
+  
+  p_cov <- CoveragePlot(
+    object             = multiome_obj,
+    region             = promoter_region,
+    annotation         = TRUE,
+    peaks              = FALSE,
+    links              = FALSE,
+    group.by           = celltype_col,
+     idents             = celltype_levels,
+    heights            = c(10, 1.5)
+  ) &
+    scale_fill_manual(values = type_palette) &
+    theme(
+      legend.position  = "none",
+      axis.title.x     = element_blank(),
+      axis.text.x      = element_blank(),
+      axis.ticks.x     = element_blank(),
+      axis.title.y     = element_blank(),
+      axis.text.y      = element_blank(),
+      axis.ticks.y     = element_blank(),
+      strip.text.y.left = element_blank(),
+      plot.margin      = margin(2, 1, 2, 1)
+    )
+  
+  # Add the TF title at the top of each column track
+  p_cov[[1]] <- p_cov[[1]] +
+    ggtitle(tf) +
+    theme(plot.title = element_text(hjust = 0.5, size = 10, face = "italic"))
+  
+  p_cov
+})
+
+p_panel2_atac <- wrap_plots(cov_plot_list, ncol = length(cov_plot_list)) +
+  plot_annotation(
+    title = "Chromatin accessibility",
+    theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 12))
+  )
+
+print(p_panel2_atac)
+```
+
+---
+
+## 8. Panel 3 (Right): Normalized `chromVAR` Motif Activity Heatmap
+
+In Figure 1e (right panel) and the paper's Methods (*"TF motif enrichment analysis"*, p. 12):
+- For each signature TF's JASPAR2020 motif, we average the per-cell `chromVAR` deviation z-scores within each cell type.
+- We then apply **min–max normalization (`[0, 1]`)** across cell types for each motif (`Normalized chromVAR activity`) and plot a `geom_tile()` heatmap using the `viridis` palette.
+
+```{r panel3_motif_activity, fig.width=4.5, fig.height=8}
+DefaultAssay(multiome_obj) <- "chromvar"
+chromvar_mat <- GetAssayData(multiome_obj, assay = "chromvar", layer = "data")[tf_map$motif_id, , drop = FALSE]
+
+motif_summary <- lapply(seq_len(nrow(tf_map)), function(i) {
+  tf_sym   <- as.character(tf_map$gene_symbol[i])
+  motif_id <- tf_map$motif_id[i]
+  vals     <- as.numeric(chromvar_mat[motif_id, ])
+  
+  df <- data.frame(
+    cell_type = Idents(multiome_obj),
+    score     = vals
+  ) %>%
+    group_by(cell_type) %>%
+    summarise(
+      mean_chromvar = mean(score, na.rm = TRUE),
+      .groups       = "drop"
+    ) %>%
+    mutate(
+      tf = tf_sym,
+      # Min-max normalize [0, 1] across cell types for this TF motif
+      norm_chromvar = if (max(mean_chromvar, na.rm = TRUE) > min(mean_chromvar, na.rm = TRUE)) {
+        (mean_chromvar - min(mean_chromvar, na.rm = TRUE)) /
+          (max(mean_chromvar, na.rm = TRUE) - min(mean_chromvar, na.rm = TRUE))
+      } else {
+        0
+      }
+    )
+  df
+}) %>% bind_rows()
+
+motif_summary$cell_type <- factor(motif_summary$cell_type, levels = rev(celltype_levels))
+motif_summary$tf <- factor(motif_summary$tf, levels = valid_tfs)
+
+p_panel3_motif <- ggplot(motif_summary, aes(x = tf, y = cell_type, fill = norm_chromvar)) +
+  geom_tile(color = "grey30", linewidth = 0.25) +
+  scale_fill_viridis_c(
+    name   = "Normalized\nchromVAR activity",
+    option = "viridis",
+    limits = c(0, 1),
+    breaks = c(0, 0.5, 1.0)
+  ) +
+  scale_x_discrete(position = "top") +
+  labs(title = "Motif activity", x = NULL, y = NULL) +
+  theme_bw(base_size = 11) +
+  theme(
+    plot.title       = element_text(hjust = 0.5, face = "bold", size = 12),
+    axis.text.x.top  = element_text(angle = 90, hjust = 0, vjust = 0.5, face = "italic", color = "black"),
+    axis.text.y      = element_blank(),
+    axis.ticks.y     = element_blank(),
+    panel.grid       = element_blank(),
+    legend.position  = "bottom",
+    legend.title     = element_text(size = 8),
+    legend.text      = element_text(size = 7),
+    plot.margin      = margin(5, 5, 5, 2)
+  )
+
+print(p_panel3_motif)
+```
+
+---
+
+## 9. Assemble & Export Complete 3-Panel Figure 1E
+
+We align **Panel 1 (Gene Expression)**, **Panel 2 (Promoter Chromatin Accessibility)**, and **Panel 3 (`chromVAR` Motif Activity)** side-by-side and save both PDF and PNG versions in `output_dir`.
+
+```{r assemble_figure1e, fig.width=18, fig.height=10}
+# Combine the 3 panels horizontally with proportional widths matching Figure 1e
+fig1e_combined <- (p_panel1_gex | wrap_plots(cov_plot_list, ncol = length(cov_plot_list)) | p_panel3_motif) +
+  plot_layout(widths = c(1.5, 4.2, 1.3)) +
+  plot_annotation(
+    title    = paste0(sample_id, " - Tri-Modal Signature TF Validation (Gene Expression, Promoter Accessibility & Motif Activity)"),
+    subtitle = paste0("Grouped by: ", celltype_col, " (n = ", ncol(multiome_obj), " cells)"),
+    theme    = theme(
+      plot.title    = element_text(hjust = 0.5, face = "bold", size = 14),
+      plot.subtitle = element_text(hjust = 0.5, size = 11)
+    )
+  )
+
+print(fig1e_combined)
+
+# Save high-resolution PDF and PNG
+fig1e_pdf <- file.path(output_dir, paste0(sample_id, "_Figure1E_trimodal_TF_validation.pdf"))
+fig1e_png <- file.path(output_dir, paste0(sample_id, "_Figure1E_trimodal_TF_validation.png"))
+
+ggsave(filename = fig1e_pdf, plot = fig1e_combined, width = 18, height = 10, units = "in")
+ggsave(filename = fig1e_png, plot = fig1e_combined, width = 18, height = 10, units = "in", dpi = 300)
+
+cat("Saved Figure 1E PDF to:", fig1e_pdf, "\n")
+cat("Saved Figure 1E PNG to:", fig1e_png, "\n")
+```
+
+---
+
+## Session Information
+
+```{r session_info}
+sessionInfo()
+```

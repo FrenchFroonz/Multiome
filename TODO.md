@@ -4,6 +4,19 @@ This document tracks planned scripts, upcoming analytical modules, and pipeline 
 
 ---
 
+## Next Step: Integrating the Rest of the Paper's Analysis
+
+Once we have tested [`03_Figure1E_TriModal_TF_Validation.Rmd`](file:///Users/franz/Documents/Code/Ganglioglioma/Multiome_workspace/03_Figure1E_TriModal_TF_Validation.Rmd) (with data-driven discovery of the top 10–15 lineage-defining TFs across clusters/cell types), the next modules from the reference workflow ([`Reference_Pipeline_Comparison.md`](file:///Users/franz/Documents/Code/Ganglioglioma/Multiome_workspace/Reference_Pipeline_Comparison.md)) to build are:
+
+1. [ ] **Multi-Sample Cohort Integration (`04_Cohort_Integration_RPCA_rLSI.Rmd`):**
+   - Unify the MACS2 peaks across all 4 samples (`GG001AC`, `GG001IF`, `GG001AMY`, `GG001TB`), regress out Cell Cycle Difference (`CCD`), and run **RPCA (RNA) + Reciprocal LSI (`rlsi`, ATAC) + Joint WNN** + Extended Data Fig. 2 multi-sample QC/composition plots (from `00`–`02`).
+2. [ ] **Tumor-to-Normal Developmental Mapping (`05_Tumor_to_Normal_SingleCellNet.Rmd`):**
+   - Project Ganglioglioma cells onto normal developmental/cortical states using `SingleCellNet` + Seurat `MapQuery` and Sankey river plots (from `24` & `25`, Fig. 4h–j).
+3. [ ] **8D WNN Lineage Trajectory & Dynamic GAMs (`06_Slingshot_tradeSeq_Trajectory.Rmd`):**
+   - Reconstruct glioneuronal differentiation trajectories and bifurcation drivers using 8D WNN `mclust` + `slingshot` + `tradeSeq` (from `07`–`08`, Fig. 3c–j).
+
+---
+
 ## High-Priority Enhancements (Current Scripts)
 
 - [ ] **Empirically evaluate TSS Enrichment cutoff:**
