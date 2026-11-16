@@ -303,14 +303,14 @@ chromvar_motifs <- rownames(multiome_obj[["chromvar"]])
 
 # Build the universe of candidate TFs present across all 3 modalities (RNA + ATAC TSS + JASPAR2020 Motif)
 candidate_tf_map <- motif_lookup %>%
-  filter(
+  dplyr::filter(
     gene_symbol %in% rna_genes,
     gene_symbol %in% annot_genes,
     motif_id %in% chromvar_motifs
   ) %>%
-  group_by(gene_symbol) %>%
-  slice(1) %>%
-  ungroup()
+  dplyr::group_by(gene_symbol) %>%
+  dplyr::slice(1) %>%
+  dplyr::ungroup()
 
 cat(sprintf(
   "Found %d candidate JASPAR2020 Transcription Factors present in RNA (%s), ATAC gene annotations, and chromVAR.\n",
@@ -362,20 +362,20 @@ if (isTRUE(auto_discover_tfs)) {
         mean_chromvar_z = as.numeric(row_means),
         stringsAsFactors = FALSE
       )
-    }) %>% bind_rows()
+    }) %>% dplyr::bind_rows()
     
     # 3. Annotate DE TFs with JASPAR motif ID and cluster-specific chromVAR activity
     de_tfs_annotated <- de_tfs %>%
-      inner_join(candidate_tf_map, by = c("gene" = "gene_symbol")) %>%
-      left_join(
+      dplyr::inner_join(candidate_tf_map, by = c("gene" = "gene_symbol")) %>%
+      dplyr::left_join(
         chromvar_cluster_means,
         by = c("cluster" = "cluster", "motif_id" = "motif_id")
       ) %>%
-      mutate(
+      dplyr::mutate(
         cluster = factor(as.character(cluster), levels = celltype_levels),
         concordant_motif = !is.na(mean_chromvar_z) & (mean_chromvar_z > 0)
       ) %>%
-      arrange(cluster, desc(concordant_motif), desc(avg_log2FC), p_val_adj)
+      dplyr::arrange(cluster, dplyr::desc(concordant_motif), dplyr::desc(avg_log2FC), p_val_adj)
     
     # Export full differential TF table to CSV
     de_csv_path <- file.path(output_dir, paste0(sample_id, "_differential_lineage_TFs.csv"))
@@ -383,17 +383,17 @@ if (isTRUE(auto_discover_tfs)) {
     cat("Saved full differential TF table (", nrow(de_tfs_annotated), " entries) to: ", de_csv_path, "\n", sep = "")
     
     # Filter to statistically significant markers (p_val_adj < 0.05; fallback to p_val < 0.05 if needed)
-    sig_de_tfs <- de_tfs_annotated %>% filter(p_val_adj < 0.05)
+    sig_de_tfs <- de_tfs_annotated %>% dplyr::filter(p_val_adj < 0.05)
     if ( length(unique(sig_de_tfs$gene)) < min_target_tfs ) {
-      sig_de_tfs <- de_tfs_annotated %>% filter(p_val < 0.05)
+      sig_de_tfs <- de_tfs_annotated %>% dplyr::filter(p_val < 0.05)
     }
     
     # Assign cluster rank per TF within each cell type
     ranked_per_cluster <- sig_de_tfs %>%
-      group_by(cluster) %>%
-      mutate(rank_in_cluster = row_number()) %>%
-      ungroup() %>%
-      arrange(rank_in_cluster, cluster, desc(avg_log2FC))
+      dplyr::group_by(cluster) %>%
+      dplyr::mutate(rank_in_cluster = dplyr::row_number()) %>%
+      dplyr::ungroup() %>%
+      dplyr::arrange(rank_in_cluster, cluster, dplyr::desc(avg_log2FC))
     
     # Round-robin selection across clusters (rank 1 per cluster first, then rank 2, 3...)
     # to select target_n_tfs (bounded between min_target_tfs and max_target_tfs)
@@ -402,7 +402,7 @@ if (isTRUE(auto_discover_tfs)) {
     seen_genes <- character(0)
     
     for (r in seq_len(max(ranked_per_cluster$rank_in_cluster, na.rm = TRUE))) {
-      sub_r <- ranked_per_cluster %>% filter(rank_in_cluster == r)
+      sub_r <- ranked_per_cluster %>% dplyr::filter(rank_in_cluster == r)
       for (i in seq_len(nrow(sub_r))) {
         g <- sub_r$gene[i]
         if (!g %in% seen_genes) {
@@ -414,9 +414,9 @@ if (isTRUE(auto_discover_tfs)) {
       if (length(seen_genes) >= n_goal) break
     }
     
-    selected_tf_df <- bind_rows(selected_rows) %>%
-      mutate(cluster = factor(as.character(cluster), levels = celltype_levels)) %>%
-      arrange(cluster, rank_in_cluster, desc(avg_log2FC))
+    selected_tf_df <- dplyr::bind_rows(selected_rows) %>%
+      dplyr::mutate(cluster = factor(as.character(cluster), levels = celltype_levels)) %>%
+      dplyr::arrange(cluster, rank_in_cluster, dplyr::desc(avg_log2FC))
     
     signature_tfs <- as.character(selected_tf_df$gene)
     cat(sprintf(
@@ -433,7 +433,7 @@ if (isTRUE(auto_discover_tfs)) {
 
 # Map final signature TFs to their JASPAR motif IDs
 tf_map <- candidate_tf_map %>%
-  filter(gene_symbol %in% signature_tfs)
+  dplyr::filter(gene_symbol %in% signature_tfs)
 
 valid_tfs <- signature_tfs[signature_tfs %in% tf_map$gene_symbol]
 missing_tfs <- setdiff(signature_tfs, valid_tfs)
@@ -446,13 +446,13 @@ if (length(valid_tfs) == 0) {
 }
 
 tf_map <- tf_map %>%
-  filter(gene_symbol %in% valid_tfs) %>%
-  mutate(gene_symbol = factor(gene_symbol, levels = valid_tfs)) %>%
-  arrange(gene_symbol)
+  dplyr::filter(gene_symbol %in% valid_tfs) %>%
+  dplyr::mutate(gene_symbol = factor(gene_symbol, levels = valid_tfs)) %>%
+  dplyr::arrange(gene_symbol)
 
 if (exists("selected_tf_df") && nrow(selected_tf_df) > 0) {
   display_df <- selected_tf_df %>%
-    select(
+    dplyr::select(
       Peak_Cluster = cluster,
       TF_Gene      = gene,
       JASPAR_Motif = motif_id,
@@ -495,13 +495,13 @@ gex_summary <- lapply(valid_tfs, function(tf) {
     cell_type = cell_groups,
     expr      = vals
   ) %>%
-    group_by(cell_type) %>%
-    summarise(
+    dplyr::group_by(cell_type) %>%
+    dplyr::summarise(
       mean_expr = mean(expr, na.rm = TRUE),
       pct_exp   = mean(expr > 0, na.rm = TRUE) * 100,
       .groups   = "drop"
     ) %>%
-    mutate(
+    dplyr::mutate(
       tf = tf,
       # Min-max normalize [0, 1] across cell types for this TF (as in Fig. 1e)
       norm_expr = if (max(mean_expr) > min(mean_expr)) {
@@ -511,7 +511,7 @@ gex_summary <- lapply(valid_tfs, function(tf) {
       }
     )
   df
-}) %>% bind_rows()
+}) %>% dplyr::bind_rows()
 
 # Lock factor levels so top-to-bottom row order matches across all 3 panels
 gex_summary$cell_type <- factor(gex_summary$cell_type, levels = rev(celltype_levels))
@@ -646,12 +646,12 @@ motif_summary <- lapply(seq_len(nrow(tf_map)), function(i) {
     cell_type = Idents(multiome_obj),
     score     = vals
   ) %>%
-    group_by(cell_type) %>%
-    summarise(
+    dplyr::group_by(cell_type) %>%
+    dplyr::summarise(
       mean_chromvar = mean(score, na.rm = TRUE),
       .groups       = "drop"
     ) %>%
-    mutate(
+    dplyr::mutate(
       tf = tf_sym,
       # Min-max normalize [0, 1] across cell types for this TF motif
       norm_chromvar = if (max(mean_chromvar, na.rm = TRUE) > min(mean_chromvar, na.rm = TRUE)) {
@@ -662,7 +662,7 @@ motif_summary <- lapply(seq_len(nrow(tf_map)), function(i) {
       }
     )
   df
-}) %>% bind_rows()
+}) %>% dplyr::bind_rows()
 
 motif_summary$cell_type <- factor(motif_summary$cell_type, levels = rev(celltype_levels))
 motif_summary$tf <- factor(motif_summary$tf, levels = valid_tfs)
