@@ -6,7 +6,7 @@ This document tracks planned scripts, upcoming analytical modules, and pipeline 
 
 ## Next Step: Integrating the Rest of the Paper's Analysis
 
-Once we have tested [`03_Figure1E_TriModal_TF_Validation.Rmd`](file:///Users/franz/Documents/Code/Ganglioglioma/Multiome_workspace/03_Figure1E_TriModal_TF_Validation.Rmd) (with data-driven discovery of the top 10–15 lineage-defining TFs across clusters/cell types), the next modules from the reference workflow ([`Reference_Pipeline_Comparison.md`](file:///Users/franz/Documents/Code/Ganglioglioma/Multiome_workspace/Reference_Pipeline_Comparison.md)) to build are:
+Once we have tested [`03_Figure1E_TriModal_TF_Validation.Rmd`](file:///Users/franz/Documents/Code/Ganglioglioma/Multiome_workspace/03_Figure1E_TriModal_TF_Validation.Rmd) (with data-driven discovery of the top 10–15 lineage-defining TFs across clusters/cell types) and [`04_ATAC_CNA_Inference.Rmd`](file:///Users/franz/Documents/Code/Ganglioglioma/Multiome_workspace/04_ATAC_CNA_Inference.Rmd) (single-cell ATAC Copy Number Alteration inference), the next modules from the reference workflow ([`Reference_Pipeline_Comparison.md`](file:///Users/franz/Documents/Code/Ganglioglioma/Multiome_workspace/Reference_Pipeline_Comparison.md)) to build are:
 
 1. [ ] **Multi-Sample Cohort Integration (`04_Cohort_Integration_RPCA_rLSI.Rmd`):**
    - Unify the MACS2 peaks across all 4 samples (`GG001AC`, `GG001IF`, `GG001AMY`, `GG001TB`), regress out Cell Cycle Difference (`CCD`), and run **RPCA (RNA) + Reciprocal LSI (`rlsi`, ATAC) + Joint WNN** + Extended Data Fig. 2 multi-sample QC/composition plots (from `00`–`02`).

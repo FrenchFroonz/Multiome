@@ -4,7 +4,15 @@ All notable changes, architectural updates, and code modifications for this repo
 
 ---
 
-## [Current - 2026-11-13]
+## [Current - 2026-11-16]
+### Added
+- **`04_ATAC_CNA_Inference.Rmd`**: Standalone R Markdown notebook that imports the processed Multiome Seurat `.rds` object and runs single-cell somatic Copy Number Variation/Alteration inference directly using the **`AtaCNV`** R package (`XiDsLab/AtaCNV`) following its official `README.md` and `tutorial.R`:
+  - Builds `cell_info` (`cluster`, `cell_type` = `"normal"` vs. `"tumor"`) and the 3,102-bin `hg38` cell-by-bin `count` matrix (`bin_info_hg38` / `AtaCNV::bin2str()`).
+  - Runs `AtaCNV::normalize()`, `AtaCNV::plot_heatmap()`, `AtaCNV::calculate_CNV()` (and `AtaCNV::calculate_CNV_arm_level()`), `AtaCNV::CNV_score()`, and `AtaCNV::estimate_cnv_state_cluster()`, and projects the resulting CNV scores and `chr7` copy ratios onto the Multiome UMAP (`<sample_id>_AtaCNV_UMAP_summary.pdf` and `<sample_id>_multiome_merged_with_AtaCNV.rds`).
+
+---
+
+## [2026-11-13]
 ### Added
 - **Data-Driven Lineage-Defining TF Discovery in [`03_Figure1E_TriModal_TF_Validation.Rmd`](file:///Users/franz/Documents/Code/Ganglioglioma/Multiome_workspace/03_Figure1E_TriModal_TF_Validation.Rmd) (Chunk 5)**: Added automated differential expression discovery (`Seurat::FindAllMarkers`) intersected with `JASPAR2020` `chromVAR` motifs and `EnsDb.Hsapiens.v86` TSS annotations to identify the **top 10–15 lineage-defining TFs specific to our dataset** across `ScType` / `Azimuth_cellType` / `seurat_clusters` (prioritizing TFs with concordant positive `chromVAR` motif activity and ordering columns along cell types for a diagonal cascade), plus CSV export (`<sample_id>_differential_lineage_TFs.csv`).
 - **`03_Figure1E_TriModal_TF_Validation.Rmd`**: Standalone R Markdown notebook recreating the 3-panel multimodal validation figure (Figure 1e from Wang et al., *Nature* 2025) on the saved `<sample_id>_multiome_merged.rds` object without re-running preprocessing:

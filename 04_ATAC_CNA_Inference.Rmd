@@ -1,0 +1,491 @@
+---
+title: "Single-Cell ATAC Copy Number Alteration Inference Using AtaCNV (XiDsLab/AtaCNV)"
+author: "Ganglioglioma Multiome Pipeline"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = TRUE,
+  fig.width = 14,
+  fig.height = 9
+)
+```
+
+## Overview: Running `AtaCNV` (`XiDsLab/AtaCNV`) on Our Multiome Dataset
+
+This notebook implements single-cell ATAC Copy Number Variation/Alteration (CNV/CNA) detection directly using the **`AtaCNV`** R package ([`https://github.com/XiDsLab/AtaCNV`](https://github.com/XiDsLab/AtaCNV/tree/main), Wang et al., *Cell Reports Methods* 2024), strictly following the official package workflow in `README.md` and `tutorial.R`:
+
+1. **Input Matrix Generation (`count` & `cell_info`):**
+   - Imports our processed Multiome Seurat object (`<sample_id>_multiome_merged_with_chromvar.rds` or `<sample_id>_multiome_merged.rds`).
+   - Builds the **cell-by-bin** read count matrix (`count`, 3,102 1 Mbp bins across `hg38` defined in `AtaCNV`'s `bin_info_hg38` / `chr_length_hg38`, with column names formatted via `AtaCNV::bin2str()`) and the `cell_info` data frame (`cluster` and `cell_type` = `"normal"` vs. `"tumor"`).
+2. **Normalization Module (`AtaCNV::normalize` & `AtaCNV::plot_heatmap`):**
+   - Runs `AtaCNV::normalize()` (`dlm` Kalman smoothing + `edgeR::cpm` + normal baseline deconvolution + LOESS `gc_correction = TRUE`) and plots the pre-segmentation copy ratio heatmap via `AtaCNV::plot_heatmap()`.
+3. **Segmentation Module (`AtaCNV::calculate_CNV`, `AtaCNV::calculate_CNV_arm_level` & `AtaCNV::plot_heatmap`):**
+   - Runs multi-sample `BICseq2` joint segmentation via `AtaCNV::calculate_CNV()` (and chromosome-arm level calling via `AtaCNV::calculate_CNV_arm_level()`) and plots the segmented copy ratio heatmap via `AtaCNV::plot_heatmap()`.
+4. **CNV Burden Score & Copy State Inference (`AtaCNV::CNV_score` & `AtaCNV::estimate_cnv_state_cluster`):**
+   - Computes cluster CNV burden scores via `AtaCNV::CNV_score()`, infers discrete copy number states via `AtaCNV::estimate_cnv_state_cluster()`, and projects the `AtaCNV` results back onto the Seurat object's UMAP (`wnn.umap` / `umap`).
+
+---
+
+## 1. Install & Load `AtaCNV` (`XiDsLab/AtaCNV`)
+
+If `AtaCNV` is not yet installed on the server, run the installation block below once in your R console (or let the chunk install it automatically):
+
+```{r install_and_load_atacnv}
+# Install required CRAN / Bioconductor dependencies listed in XiDsLab/AtaCNV/DESCRIPTION
+cran_deps <- c("dlm", "irlba", "parallelDist", "circlize", "RColorBrewer", "devtools")
+missing_cran <- cran_deps[!vapply(cran_deps, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing_cran) > 0) {
+  install.packages(missing_cran, repos = "https://cloud.r-project.org")
+}
+
+bioc_deps <- c("edgeR", "ComplexHeatmap")
+missing_bioc <- bioc_deps[!vapply(bioc_deps, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing_bioc) > 0) {
+  BiocManager::install(missing_bioc, update = FALSE, ask = FALSE)
+}
+
+# Install XiDsLab/AtaCNV from GitHub if not already installed
+if (!requireNamespace("AtaCNV", quietly = TRUE)) {
+  devtools::install_github("XiDsLab/AtaCNV", upgrade = "never")
+}
+
+suppressPackageStartupMessages({
+  library(AtaCNV)
+  library(Seurat)
+  library(Signac)
+  library(BSgenome.Hsapiens.UCSC.hg38)
+  library(Biostrings)
+  library(GenomicRanges)
+  library(Matrix)
+  library(ComplexHeatmap)
+  library(ggplot2)
+  library(patchwork)
+  library(dplyr)
+})
+```
+
+### Ensure `AtaCNV` `hg38` Reference Data & `MBICseq` Binary Permissions Are Ready
+
+In `XiDsLab/AtaCNV`:
+1. The bundled Linux binary `inst/BICseq2/MBICseq` is stored in Git without `+x` executable permissions (`-rw-r--r--`), so we set `Sys.chmod(..., "0755")` so `AtaCNV::calculate_CNV()` can invoke `MBICseq` cleanly.
+2. In `data/bin_info_hg38.rda`, the `gc` column used by `AtaCNV::normalize(..., genome = "hg38", gc_correction = TRUE)` is missing (unlike `bin_info_hg19.rda`). The helper below populates `bin_info_hg38$gc` from `BSgenome.Hsapiens.UCSC.hg38` inside the installed `AtaCNV` package `data/bin_info_hg38.rda` if missing.
+
+```{r prepare_atacnv_hg38}
+# 1. Ensure MBICseq Linux binary inside AtaCNV is executable (+x)
+mbic_path <- system.file("BICseq2", "MBICseq", package = "AtaCNV")
+if (nzchar(mbic_path) && file.exists(mbic_path)) {
+  Sys.chmod(mbic_path, mode = "0755")
+  cat("Verified executable permission on AtaCNV MBICseq binary:\n  ", mbic_path, "\n")
+}
+
+# 2. Ensure bin_info_hg38 in AtaCNV has the $gc column required by AtaCNV::normalize(gc_correction = TRUE)
+data("bin_info_hg38", package = "AtaCNV")
+if (is.null(bin_info_hg38$gc)) {
+  cat("Populating missing 'gc' column in AtaCNV's bin_info_hg38 from BSgenome.Hsapiens.UCSC.hg38...\n")
+  bin_gr_hg38 <- GenomicRanges::GRanges(
+    seqnames = bin_info_hg38$chr,
+    ranges   = IRanges::IRanges(start = bin_info_hg38$start + 1, end = bin_info_hg38$end)
+  )
+  seqs <- Biostrings::getSeq(BSgenome.Hsapiens.UCSC.hg38, bin_gr_hg38)
+  freq <- Biostrings::alphabetFrequency(seqs, baseOnly = TRUE)
+  atgc <- rowSums(freq[, c("A", "C", "G", "T"), drop = FALSE])
+  bin_info_hg38$gc <- ifelse(atgc > 0, (freq[, "G"] + freq[, "C"]) / atgc, 0.41)
+  
+  # Save updated bin_info_hg38.rda into the installed AtaCNV package data directory
+  # and unregister it from Rdata.rds so utils::data("bin_info_hg38") loads the updated .rda
+  pkg_data_dir <- system.file("data", package = "AtaCNV")
+  if (nzchar(pkg_data_dir) && file.access(pkg_data_dir, 2) == 0) {
+    pkg_rda_path <- file.path(pkg_data_dir, "bin_info_hg38.rda")
+    save(bin_info_hg38, file = pkg_rda_path)
+    rdata_rds <- file.path(pkg_data_dir, "Rdata.rds")
+    if (file.exists(rdata_rds)) {
+      rds_idx <- readRDS(rdata_rds)
+      rds_idx[["bin_info_hg38"]] <- NULL
+      saveRDS(rds_idx, rdata_rds)
+    }
+    cat("Updated bin_info_hg38.rda with GC content in:", pkg_data_dir, "\n")
+  }
+}
+```
+
+---
+
+## 2. Configure Sample Paths & Load Processed Multiome Object
+
+```{r config_and_load}
+# 1. Sample Identifier
+sample_id <- "GG001AC"
+
+# 2. Path to processed Multiome Seurat object (.rds)
+output_dir <- paste0("./outputs/test_", sample_id)
+chromvar_rds_path <- file.path(output_dir, paste0(sample_id, "_multiome_merged_with_chromvar.rds"))
+multiome_rds_path <- file.path(output_dir, paste0(sample_id, "_multiome_merged.rds"))
+
+# 3. Path to 10x ATAC fragments file (atac_fragments.tsv.gz)
+fragments_path <- paste0(
+  "/data-pure/sequencing/ngs/NGS2026_10893/HG38/count/cellranger/",
+  sample_id, "/atac_fragments.tsv.gz"
+)
+
+# 4. Output directory for AtaCNV files (must end with "/" as required by AtaCNV)
+cna_out_dir <- paste0(file.path(output_dir, "AtaCNV"), "/")
+dir.create(cna_out_dir, showWarnings = FALSE, recursive = TRUE)
+
+# 5. Cell-type metadata column in multiome_obj ("ScType" or "Azimuth_cellType")
+preferred_celltype_col <- "ScType"
+
+# 6. Non-neoplastic cell types to label as "normal" in cell_info$cell_type
+normal_celltype_patterns <- c(
+  "microglia", "micro-pvm", "macrophage", "immune", "t cell", "nk cell", "b cell", "monocyte",
+  "endothelial", "endo", "pericyte", "vlmc", "vascular",
+  "oligodendrocyte", "oligo"
+)
+
+# 7. How to generate the 3,102-bin cell-by-bin count matrix:
+#   - use_atacnv_generate_input = FALSE (Recommended): Quantifies the exact 3,102 bins from
+#     AtaCNV's chr_length_hg38 / bin_info_hg38 via Signac::FeatureMatrix (takes ~30 seconds)
+#   - use_atacnv_generate_input = TRUE: Calls AtaCNV::generate_input() (pure-R line-by-line reader)
+use_atacnv_generate_input <- FALSE
+
+# Load Multiome Seurat object
+input_rds <- if (file.exists(chromvar_rds_path)) chromvar_rds_path else multiome_rds_path
+if (!file.exists(input_rds)) {
+  stop("Processed Multiome RDS file not found at: ", input_rds)
+}
+cat("Loading processed Multiome Seurat object from:", input_rds, "\n")
+multiome_obj <- readRDS(input_rds)
+cat("Loaded", ncol(multiome_obj), "cells.\n")
+
+# Verify or re-attach ATAC Fragment file
+DefaultAssay(multiome_obj) <- "ATAC"
+frag_list <- Fragments(multiome_obj[["ATAC"]])
+if (length(frag_list) == 0 || !file.exists(GetFragmentData(frag_list[[1]], slot = "path"))) {
+  Fragments(multiome_obj[["ATAC"]]) <- NULL
+  Fragments(multiome_obj[["ATAC"]]) <- CreateFragmentObject(
+    path  = fragments_path,
+    cells = colnames(multiome_obj),
+    validate.fragments = FALSE
+  )
+}
+```
+
+---
+
+## 3. Build `cell_info` & `count` Input Matrix (`tutorial.R` Setup)
+
+In [`tutorial.R`](https://github.com/XiDsLab/AtaCNV/blob/main/tutorial.R), `AtaCNV` expects two inputs:
+1. **`cell_info`:** A data frame indexed by cell barcodes containing:
+   - `cell_info$cluster`: Cell cluster / cell-type identity (`ScType` or `Azimuth_cellType`).
+   - `cell_info$cell_type`: `"normal"` for reference diploid cells vs. `"tumor"` for query/candidate tumor cells.
+2. **`count`:** A **cell-by-bin** matrix (`nrow = cells`, `ncol = 3102` 1 Mbp bins from `data("bin_info_hg38")`), where `rownames(count)` are cell barcodes and `colnames(count)` are formatted via `AtaCNV::bin2str(bin_info_hg38)` (`"chr1_0_1e+06"`, `"chr1_1e+06_2e+06"`, ...).
+
+```{r build_cell_info_and_count}
+# 1. Construct cell_info matching tutorial.R
+candidate_cols <- unique(c(preferred_celltype_col, "ScType", "Azimuth_cellType", "seurat_clusters"))
+celltype_col <- intersect(candidate_cols, colnames(multiome_obj@meta.data))[1]
+
+cluster_vec <- as.character(multiome_obj@meta.data[[celltype_col]])
+cluster_vec[is.na(cluster_vec) | cluster_vec == ""] <- "Unannotated"
+
+azimuth_vec <- if ("Azimuth_cellType" %in% colnames(multiome_obj@meta.data)) {
+  as.character(multiome_obj$Azimuth_cellType)
+} else {
+  rep("", ncol(multiome_obj))
+}
+
+pattern_regex <- paste(normal_celltype_patterns, collapse = "|")
+is_normal <- grepl(pattern_regex, tolower(cluster_vec)) | grepl(pattern_regex, tolower(azimuth_vec))
+
+cell_info <- data.frame(
+  cluster   = cluster_vec,
+  cell_type = ifelse(is_normal, "normal", "tumor"),
+  row.names = colnames(multiome_obj),
+  stringsAsFactors = FALSE
+)
+
+cat("Summary of cell_info (matching XiDsLab/AtaCNV/tutorial.R):\n")
+print(table(Cluster = cell_info$cluster, Type = cell_info$cell_type))
+saveRDS(cell_info, file = paste0(cna_out_dir, "cell_info.rds"))
+
+# 2. Construct or load the 3,102-column cell-by-bin count matrix for hg38
+count_rds_path <- paste0(cna_out_dir, "input.rds")
+data("bin_info_hg38", package = "AtaCNV")
+
+if (file.exists(count_rds_path)) {
+  cat("Loading cached AtaCNV input count matrix from:", count_rds_path, "\n")
+  count <- readRDS(count_rds_path)
+} else if (isTRUE(use_atacnv_generate_input)) {
+  cat("Running AtaCNV::generate_input() on fragment file...\n")
+  AtaCNV::generate_input(
+    fragment_file = fragments_path,
+    cell_barcodes = rownames(cell_info),
+    genome        = "hg38",
+    output_dir    = cna_out_dir
+  )
+  count <- readRDS(count_rds_path)
+} else {
+  cat("Quantifying fragments across AtaCNV's 3,102 hg38 1 Mbp bins (bin_info_hg38)...\n")
+  atacnv_bins_gr <- GenomicRanges::GRanges(
+    seqnames = bin_info_hg38$chr,
+    ranges   = IRanges::IRanges(start = bin_info_hg38$start + 1, end = bin_info_hg38$end)
+  )
+  bin_feature_mat <- Signac::FeatureMatrix(
+    fragments = Fragments(multiome_obj[["ATAC"]]),
+    features  = atacnv_bins_gr,
+    cells     = rownames(cell_info),
+    verbose   = TRUE
+  )
+  # Transpose to cell-by-bin (rows = cells, cols = 3,102 bins) as required by AtaCNV
+  count <- t(as.matrix(bin_feature_mat[, rownames(cell_info), drop = FALSE]))
+  
+  # Format column names using AtaCNV::bin2str(bin_info_hg38)
+  colnames(count) <- AtaCNV::bin2str(bin_info_hg38)
+  rownames(count) <- rownames(cell_info)
+  saveRDS(count, file = count_rds_path)
+  cat("Saved cell-by-bin count matrix (", nrow(count), "x", ncol(count), ") to:", count_rds_path, "\n")
+}
+
+# Ensure column names are formatted with AtaCNV::bin2str(bin_info_hg38)
+colnames(count) <- AtaCNV::bin2str(bin_info_hg38)
+cat("count matrix dimensions (cells x bins):", dim(count)[1], "x", dim(count)[2], "\n")
+```
+
+---
+
+## 4. Module 1: `AtaCNV::normalize()` & Pre-Segmentation `AtaCNV::plot_heatmap()`
+
+Following [`tutorial.R`](https://github.com/XiDsLab/AtaCNV/blob/main/tutorial.R#L18-L46):
+- If `cell_info$cell_type == "normal"` contains at least 20 reference normal cells, we run **Option 2 (`mode = "normal cells"`)**.
+- Otherwise, we run **Option 3/4 (`mode = "all cells"` / `mode = "none"`)** with `cell_cluster = cell_info$cluster`.
+- We then call **`AtaCNV::plot_heatmap()`** to visualize `norm_re$copy_ratio`.
+
+```{r atacnv_normalize}
+norm_rds_path <- paste0(cna_out_dir, "norm_re.rds")
+
+n_normal <- sum(cell_info$cell_type == "normal")
+norm_mode <- if (n_normal >= 20) "normal cells" else "all cells"
+cat(sprintf("Running AtaCNV::normalize() with genome = 'hg38', mode = '%s' (n_normal = %d)...\n",
+            norm_mode, n_normal))
+
+norm_re <- AtaCNV::normalize(
+  count         = count,
+  genome        = "hg38",
+  mode          = norm_mode,
+  normal_cells  = if (norm_mode == "normal cells") (cell_info$cell_type == "normal") else "none",
+  cell_cluster  = cell_info$cluster,
+  gc_correction = TRUE,
+  output_dir    = cna_out_dir,
+  output_name   = "norm_re.rds"
+)
+
+# Match retained cells (f2 filter inside AtaCNV::normalize)
+kept_cells <- rownames(norm_re$copy_ratio)
+cell_info_kept <- cell_info[kept_cells, , drop = FALSE]
+
+# Visualize copy ratio after normalization using AtaCNV::plot_heatmap()
+cat("Running AtaCNV::plot_heatmap() on normalized copy ratios...\n")
+AtaCNV::plot_heatmap(
+  copy_ratio      = norm_re$copy_ratio,
+  cell_cluster    = cell_info_kept$cluster,
+  cell_annotation = cell_info_kept$cell_type,
+  output_dir      = cna_out_dir,
+  output_name     = paste0(sample_id, "_copy_ratio_norm.png")
+)
+AtaCNV::plot_heatmap(
+  copy_ratio      = norm_re$copy_ratio,
+  cell_cluster    = cell_info_kept$cluster,
+  cell_annotation = cell_info_kept$cell_type,
+  output_dir      = cna_out_dir,
+  output_name     = paste0(sample_id, "_copy_ratio_norm.pdf")
+)
+
+knitr::include_graphics(paste0(cna_out_dir, sample_id, "_copy_ratio_norm.png"))
+```
+
+---
+
+## 5. Module 2: `AtaCNV::calculate_CNV()` Segmentation & Post-Segmentation `AtaCNV::plot_heatmap()`
+
+Following [`tutorial.R`](https://github.com/XiDsLab/AtaCNV/blob/main/tutorial.R#L48-L58) and `README.md`:
+- We run **`AtaCNV::calculate_CNV()`** (which uses `MBICseq` to jointly segment all cells and returns `list(copy_ratio = CNV, bkp = bkp, CNV_seg = CNV_re)`).
+- *(Note: If the precompiled `MBICseq` binary in `AtaCNV` is incompatible with the cluster's glibc/CPU architecture, we automatically fall back to `AtaCNV::calculate_CNV_arm_level()`).*
+- We then call **`AtaCNV::plot_heatmap()`** on `CNV_re$copy_ratio`.
+
+```{r atacnv_segmentation}
+cat("Running AtaCNV::calculate_CNV() for multi-sample BIC-seq segmentation...\n")
+
+# Use downsample = 1000 as recommended in ?AtaCNV::calculate_CNV if > 1500 cells
+ds_val <- if (nrow(norm_re$norm_count) > 1500) 1000 else 0
+
+CNV_re <- tryCatch({
+  AtaCNV::calculate_CNV(
+    norm_count  = norm_re$norm_count,
+    baseline    = norm_re$baseline,
+    lambda      = 5,
+    downsample  = ds_val,
+    output_dir  = cna_out_dir,
+    output_name = "CNV_re.rds"
+  )
+}, error = function(e) {
+  message("Note: MBICseq binary execution failed (", e$message,
+          "); running AtaCNV::calculate_CNV_arm_level() instead...")
+  AtaCNV::calculate_CNV_arm_level(
+    norm_count  = norm_re$norm_count,
+    baseline    = if (is.matrix(norm_re$baseline)) colMeans(norm_re$baseline) else norm_re$baseline,
+    genome      = "hg38",
+    output_dir  = cna_out_dir,
+    output_name = "CNV_re.rds"
+  )
+})
+
+# Visualize copy ratio after segmentation using AtaCNV::plot_heatmap()
+cat("Running AtaCNV::plot_heatmap() on segmented copy ratios (CNV_re$copy_ratio)...\n")
+AtaCNV::plot_heatmap(
+  copy_ratio      = CNV_re$copy_ratio,
+  cell_cluster    = cell_info_kept$cluster,
+  cell_annotation = cell_info_kept$cell_type,
+  output_dir      = cna_out_dir,
+  output_name     = paste0(sample_id, "_CNV_segmented.png")
+)
+AtaCNV::plot_heatmap(
+  copy_ratio      = CNV_re$copy_ratio,
+  cell_cluster    = cell_info_kept$cluster,
+  cell_annotation = cell_info_kept$cell_type,
+  output_dir      = cna_out_dir,
+  output_name     = paste0(sample_id, "_CNV_segmented.pdf")
+)
+
+knitr::include_graphics(paste0(cna_out_dir, sample_id, "_CNV_segmented.png"))
+```
+
+---
+
+## 6. Module 3: Cluster CNV Burden Score (`AtaCNV::CNV_score`) & Discrete State Inference (`AtaCNV::estimate_cnv_state_cluster`)
+
+1. **`AtaCNV::CNV_score()`:** Computes the cluster-level CNV burden score defined in `R/downstream.R`. *(Note: `AtaCNV::CNV_score` internally references `colnames(CNV)` on line 16 of `downstream.R`, so we assign `CNV <- CNV_re$copy_ratio` first).*
+2. **`AtaCNV::estimate_cnv_state_cluster()`:** Infers discrete copy number states (`0.5` = loss, `1.0` = neutral, `1.5` = gain) if `simATAC` (`bowang-lab/simATAC`) is installed.
+
+```{r atacnv_cnv_score_and_states}
+# 1. Calculate cluster-level CNV burden scores using AtaCNV::CNV_score()
+CNV <- CNV_re$copy_ratio
+cluster_cnv_scores <- AtaCNV::CNV_score(
+  copy_ratio = CNV_re$copy_ratio,
+  cluster    = cell_info_kept$cluster,
+  delXY      = TRUE
+)
+names(cluster_cnv_scores) <- kept_cells
+
+# Also compute per-cell CNV burden (mean squared deviation from 1.0 across autosomal bins)
+bins_seg <- AtaCNV::str2bin(colnames(CNV_re$copy_ratio))
+autosomal_mask <- !(bins_seg$chr %in% c("chrX", "chrY"))
+cell_cnv_burden <- rowMeans((CNV_re$copy_ratio[, autosomal_mask, drop = FALSE] - 1)^2, na.rm = TRUE)
+
+# 2. Optional: Discrete copy state inference via AtaCNV::estimate_cnv_state_cluster()
+# Requires bowang-lab/simATAC and bin_info_hg38$map > 500000
+if (requireNamespace("simATAC", quietly = TRUE) && sum(cell_info_kept$cell_type == "normal") > 5) {
+  cat("Running AtaCNV::estimate_cnv_state_cluster()...\n")
+  # Label normal cells as "normal" and tumor cells by their cluster
+  state_label <- ifelse(cell_info_kept$cell_type == "normal", "normal", cell_info_kept$cluster)
+  CN_state <- tryCatch({
+    AtaCNV::estimate_cnv_state_cluster(
+      count      = count[kept_cells, , drop = FALSE],
+      genome     = "hg38",
+      copy_ratio = norm_re$copy_ratio,
+      bkp        = CNV_re$bkp,
+      label      = state_label
+    )
+  }, error = function(e) {
+    message("Note: estimate_cnv_state_cluster skipped (", e$message, ")")
+    NULL
+  })
+  if (!is.null(CN_state)) {
+    saveRDS(CN_state, file = paste0(cna_out_dir, "CN_state.rds"))
+  }
+} else {
+  cat("Skipping optional AtaCNV::estimate_cnv_state_cluster() (requires 'bowang-lab/simATAC').\n")
+}
+```
+
+---
+
+## 7. Integrate `AtaCNV` Outputs Back into `multiome_obj` & Plot on UMAP
+
+We store the `AtaCNV` results in `multiome_obj`:
+- `multiome_obj$AtaCNV_cluster_score` (output of `AtaCNV::CNV_score()`),
+- `multiome_obj$AtaCNV_cell_burden` (single-cell CNV burden from `CNV_re$copy_ratio`),
+- `multiome_obj$AtaCNV_chr7_ratio` (mean segmented copy ratio on `chr7` encompassing *BRAF*), and
+- `multiome_obj[["AtaCNV"]]` (Seurat assay containing `t(CNV_re$copy_ratio)`).
+
+```{r attach_to_seurat_and_plot, fig.width=15, fig.height=10}
+# Attach cluster CNV score and single-cell CNV burden to multiome_obj@meta.data
+multiome_obj$AtaCNV_cluster_score <- NA_real_
+multiome_obj$AtaCNV_cell_burden   <- NA_real_
+multiome_obj$AtaCNV_chr7_ratio    <- NA_real_
+
+multiome_obj@meta.data[kept_cells, "AtaCNV_cluster_score"] <- cluster_cnv_scores[kept_cells]
+multiome_obj@meta.data[kept_cells, "AtaCNV_cell_burden"]   <- cell_cnv_burden[kept_cells]
+
+chr7_cols <- bins_seg$chr == "chr7"
+if (any(chr7_cols)) {
+  multiome_obj@meta.data[kept_cells, "AtaCNV_chr7_ratio"] <- rowMeans(
+    CNV_re$copy_ratio[kept_cells, chr7_cols, drop = FALSE],
+    na.rm = TRUE
+  )
+}
+
+# Attach segmented copy ratios as a Seurat Assay ("AtaCNV")
+if (identical( kept_cells, colnames(multiome_obj) )) {
+  multiome_obj[["AtaCNV"]] <- Seurat::CreateAssayObject(data = t(CNV_re$copy_ratio))
+}
+
+# Plot on Joint WNN UMAP (or RNA UMAP)
+umap_red <- if ("wnn.umap" %in% names(multiome_obj@reductions)) "wnn.umap" else "umap"
+
+p1 <- DimPlot(multiome_obj, reduction = umap_red, group.by = celltype_col, label = TRUE, repel = TRUE) +
+  ggtitle(paste0(sample_id, " - ", celltype_col))
+
+p2 <- FeaturePlot(multiome_obj, reduction = umap_red, features = "AtaCNV_cluster_score",
+                  cols = c("grey90", "orange", "firebrick")) +
+  ggtitle("AtaCNV::CNV_score (Cluster Burden)")
+
+p3 <- FeaturePlot(multiome_obj, reduction = umap_red, features = "AtaCNV_cell_burden",
+                  cols = c("grey90", "orange", "firebrick")) +
+  ggtitle("Single-Cell CNV Burden (CNV_re$copy_ratio)")
+
+p4 <- FeaturePlot(multiome_obj, reduction = umap_red, features = "AtaCNV_chr7_ratio",
+                  cols = c("#2166AC", "grey90", "#B2182B")) +
+  ggtitle("Segmented chr7 Copy Ratio (BRAF Locus)")
+
+combined_umap <- (p1 | p2) / (p3 | p4)
+print(combined_umap)
+
+ggsave(
+  filename = paste0(cna_out_dir, sample_id, "_AtaCNV_UMAP_summary.pdf"),
+  plot     = combined_umap,
+  width    = 15,
+  height   = 10
+)
+
+# Save updated Seurat object
+out_seurat_rds <- file.path(output_dir, paste0(sample_id, "_multiome_merged_with_AtaCNV.rds"))
+saveRDS(multiome_obj, file = out_seurat_rds)
+cat("Saved updated Multiome object with AtaCNV results to:", out_seurat_rds, "\n")
+```
+
+---
+
+## Session Information
+
+```{r session_info}
+sessionInfo()
+```
